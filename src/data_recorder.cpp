@@ -45,7 +45,11 @@ void DataRecorder::start() {
     auto now = std::chrono::system_clock::now();
     auto tt  = std::chrono::system_clock::to_time_t(now);
     std::tm tm{};
+#ifdef _WIN32
+    localtime_s(&tm, &tt);
+#else
     localtime_r(&tt, &tm);
+#endif
 
     std::ostringstream tss;
     tss << std::put_time(&tm, "%Y%m%d_%H%M%S");
@@ -96,8 +100,8 @@ void DataRecorder::stop() {
     {
         std::lock_guard<std::mutex> lk1(hdf5QueueMutex_);
         std::lock_guard<std::mutex> lk2(imageQueueMutex_);
-        Log::info("Recorder", "Stopping – flushing " + std::to_string(hdf5Queue_.size())
-                 + " HDF5 + " + std::to_string(imageQueue_.size()) + " image items…");
+        Log::info("Recorder", "Stopping - flushing " + std::to_string(hdf5Queue_.size())
+             + " HDF5 + " + std::to_string(imageQueue_.size()) + " image items...");
     }
 
     stopRequested_.store(true);

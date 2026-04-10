@@ -7,6 +7,10 @@
 #include <limits>
 #include <sstream>
 
+namespace {
+constexpr double PI = 3.14159265358979323846;
+}
+
 // ============================================================================
 //  Construction / Destruction
 // ============================================================================
@@ -141,7 +145,7 @@ bool SyncProcessor::bootstrapAlignment() {
 // ============================================================================
 
 void SyncProcessor::syncLoop() {
-    Log::info("Sync", "Waiting for both sensors…");
+    Log::info("Sync", "Waiting for both sensors...");
 
     auto lastMonitor = std::chrono::steady_clock::now();
     constexpr double MONITOR_INTERVAL_SEC = 5.0;
@@ -312,13 +316,13 @@ void SyncProcessor::syncLoop() {
             // Event camera intrinsics (hardcoded from calibration)
             constexpr double EVT_FX = 1697.0566;
             constexpr int    EVT_W  = 1280;
-            double evtFovH = 2.0 * std::atan(EVT_W / (2.0 * EVT_FX)) * 180.0 / M_PI;
+            double evtFovH = 2.0 * std::atan(EVT_W / (2.0 * EVT_FX)) * 180.0 / PI;
 
             // Orbbec RGB intrinsics (from camera API)
             auto orbIntr = orbbec_.colorIntrinsics();
             double orbFovH = 0;
             if (orbIntr.fx > 0 && orbIntr.width > 0) {
-                orbFovH = 2.0 * std::atan(orbIntr.width / (2.0 * orbIntr.fx)) * 180.0 / M_PI;
+                orbFovH = 2.0 * std::atan(orbIntr.width / (2.0 * orbIntr.fx)) * 180.0 / PI;
             }
 
             // ── Elapsed time since system start ─────────────────────────

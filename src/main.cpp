@@ -232,8 +232,20 @@ int main(int argc, char *argv[]) {
     // ════════════════════════════════════════════════════════════════════
     //  1.  Orbbec camera  –  runs in its own thread
     // ════════════════════════════════════════════════════════════════════
-    OrbbecProcessor orbbec;
-    orbbec.start();  // launches the processing thread
+    std::unique_ptr<OrbbecProcessor> orbbec;
+    try {
+        orbbec = std::make_unique<OrbbecProcessor>();
+        orbbec->start();  // launches the processing thread
+    }
+    catch (const std::exception &e) {
+        Log::error("Main", std::string("Orbbec camera initialization failed: ") + e.what());
+        Log::error("Main", "Check device connection/power, firmware, and metadata registration on Windows.");
+        return 2;
+    }
+    catch (...) {
+        Log::error("Main", "Orbbec camera initialization failed with unknown error.");
+        return 2;
+    }
 
     // ════════════════════════════════════════════════════════════════════
     //  2.  Prophesee (event) camera – runs in its own thread
@@ -260,7 +272,7 @@ int main(int argc, char *argv[]) {
     // ════════════════════════════════════════════════════════════════════
     std::unique_ptr<SyncProcessor> sync;
     if (hasEventCam) {
-        sync = std::make_unique<SyncProcessor>(orbbec, *prophesee);
+        sync = std::make_unique<SyncProcessor>(*orbbec, *prophesee);
         sync->start();
     }
 
@@ -343,7 +355,7 @@ int main(int argc, char *argv[]) {
         } else {
             // ── Orbbec-only mode ────────────────────────────────────────
             OrbbecFrameData obFrame;
-            if (orbbec.getLatestFrame(obFrame) && obFrame.valid) {
+            if (orbbec->getLatestFrame(obFrame) && obFrame.valid) {
                 gotFrame = true;
                 obOnlyCount++;
 
@@ -417,7 +429,7 @@ int main(int argc, char *argv[]) {
     if (recorder) recorder->stop();
     if (sync) sync->stop();
     if (hasEventCam) prophesee->stop();
-    orbbec.stop();
+    if (orbbec) orbbec->stop();
 
     Log::info("Main", "Finished. Synced pairs: " + std::to_string(pairCount)
              + "  Orbbec-only frames: " + std::to_string(obOnlyCount));

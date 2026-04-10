@@ -36,7 +36,11 @@ inline std::string timestamp() {
     auto ms   = std::chrono::duration_cast<std::chrono::milliseconds>(
                     now.time_since_epoch()) % 1000;
     std::tm tm{};
+#ifdef _WIN32
+    localtime_s(&tm, &tt);
+#else
     localtime_r(&tt, &tm);
+#endif
 
     std::ostringstream oss;
     oss << std::put_time(&tm, "%H:%M:%S")
@@ -130,13 +134,13 @@ inline void banner(const std::string &title, const std::string &body,
     };
 
     std::ostringstream oss;
-    oss << hbar("╔", "═", "╗") << "\n";
-    oss << "║ " << pad(title) << " ║\n";
-    oss << hbar("╠", "═", "╣") << "\n";
+    oss << hbar("+", "-", "+") << "\n";
+    oss << "| " << pad(title) << " |\n";
+    oss << hbar("+", "-", "+") << "\n";
     for (auto &l : lines) {
-        oss << "║ " << pad(l) << " ║\n";
+        oss << "| " << pad(l) << " |\n";
     }
-    oss << hbar("╚", "═", "╝");
+    oss << hbar("+", "-", "+");
 
     // Push pure-ASCII lines into ring buffer for GUI display
     // (OpenCV putText cannot render Unicode — filter to printable ASCII only)
