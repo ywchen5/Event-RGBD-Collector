@@ -14,6 +14,7 @@
 
 // HDF5 C++ API
 #include <H5Cpp.h>
+#include <fstream>
 
 // HDF5 is NOT thread-safe by default.  All HDF5 calls must be serialised.
 static std::mutex g_hdf5Mutex;
@@ -170,6 +171,9 @@ void DataRecorder::enqueue(const SyncedPair &pair) {
         WriteTask imgTask;
         imgTask.idx    = task.idx;
         imgTask.orbbec = std::move(task.orbbec);
+        // carry event slice timestamps for images metadata
+        imgTask.evStartTs = task.events.startTs;
+        imgTask.evEndTs   = task.events.endTs;
         // imgTask.events left empty – not needed for images
 
         std::lock_guard<std::mutex> lk(imageQueueMutex_);
@@ -240,6 +244,8 @@ void DataRecorder::writeEventHdf5(const WriteTask &task) {
     std::ostringstream oss;
     oss << std::setfill('0') << std::setw(6) << task.idx;
     std::string idxStr = oss.str();
+
+    // (no local image flags needed in HDF5 writer)
 
     try {
         std::string h5Path = (eventDir_ / (idxStr + ".h5")).string();
@@ -332,6 +338,12 @@ void DataRecorder::writeImages(const WriteTask &task) {
     oss << std::setfill('0') << std::setw(6) << task.idx;
     std::string idxStr = oss.str();
 
+    // local flags/paths for files written in this task
+    bool wroteRgb = false;
+    bool wroteDepth = false;
+    std::string writtenRgbPath;
+    std::string writtenDepthPath;
+
     // ── 1. Write RGB JPEG ──────────────────────────────────────────────
     try {
         if (!task.orbbec.colorData.empty() &&
@@ -357,6 +369,8 @@ void DataRecorder::writeImages(const WriteTask &task) {
                 std::string jpgPath = (frameDir_ / (idxStr + "_rgb.jpg")).string();
                 std::vector<int> params = {cv::IMWRITE_JPEG_QUALITY, 95};
                 cv::imwrite(jpgPath, rgb, params);
+                wroteRgb = true;
+                writtenRgbPath = jpgPath;
             }
         }
     }
@@ -374,9 +388,33 @@ void DataRecorder::writeImages(const WriteTask &task) {
 
             std::string pngPath = (frameDir_ / (idxStr + "_depth.png")).string();
             cv::imwrite(pngPath, depth);
+            wroteDepth = true;
+            writtenDepthPath = pngPath;
         }
     }
     catch (const std::exception &e) {
         Log::error("Recorder", "Depth write error for " + idxStr + ": " + e.what());
+    }
+
+    // Append images.txt with filename and start/end timestamps (µs)
+    try {
+        uint64_t evStart = task.evStartTs;
+        uint64_t evEnd   = task.evEndTs;
+        if (evStart == 0) evStart = task.orbbec.colorTimestampUs ? task.orbbec.colorTimestampUs : task.orbbec.depthTimestampUs;
+        if (evEnd == 0)   evEnd   = task.orbbec.depthTimestampUs ? task.orbbec.depthTimestampUs : task.orbbec.colorTimestampUs;
+
+        std::lock_guard<std::mutex> lk(imagesTxtMutex_);
+        std::string listPath = (frameDir_ / "images.txt").string();
+        std::ofstream ofs(listPath, std::ios::app);
+        if (ofs) {
+            if (wroteRgb) ofs << std::filesystem::path(writtenRgbPath).filename().string() << " " << evStart << " " << evEnd << "\n";
+            if (wroteDepth) ofs << std::filesystem::path(writtenDepthPath).filename().string() << " " << evStart << " " << evEnd << "\n";
+            ofs.close();
+        } else {
+            Log::error("Recorder", "Failed to open images.txt for append: " + listPath);
+        }
+    }
+    catch (const std::exception &e) {
+        Log::error("Recorder", "images.txt write error for " + idxStr + ": " + e.what());
     }
 }

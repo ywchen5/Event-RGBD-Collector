@@ -66,6 +66,9 @@ private:
         uint64_t                idx;
         OrbbecFrameData         orbbec;
         EventSliceData          events;
+        // For image writer: carry event slice timestamps (µs)
+        uint64_t                evStartTs = 0;
+        uint64_t                evEndTs   = 0;
     };
 
     // ── HDF5 writer pool (serialised internally via g_hdf5Mutex) ───────
@@ -108,6 +111,9 @@ private:
     std::atomic<uint64_t> totalWritten_{0};
     std::chrono::steady_clock::time_point lastDropWarnTime_;
     std::mutex dropWarnMutex_;
+
+    // Protect concurrent append to frame/images.txt
+    std::mutex imagesTxtMutex_;
 
     // At most 1 drop-warning per second
     void emitDropWarning(const char *pool, size_t queueDepth);
