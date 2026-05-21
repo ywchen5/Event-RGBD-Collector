@@ -88,6 +88,13 @@ public:
     /// @return true if a new pair was available since the last call.
     bool getLatestPair(SyncedPair &out);
 
+    /// Thread-safe: pop the oldest queued synchronised pair. Used by recorder.
+    /// @return true if a pair was available.
+    bool popPair(SyncedPair &out);
+
+    /// Number of queued pairs waiting for the recorder/main thread.
+    size_t pairQueueSize() const;
+
     /// Check running state.
     bool isRunning() const { return running_.load(); }
 
@@ -144,6 +151,11 @@ private:
     SyncedPair        pairFront_;
     std::mutex        pairMutex_;
     std::atomic<bool> newPairReady_{false};
+
+    static constexpr size_t MAX_PAIR_QUEUE = 300; // ~10 s @ 30 fps
+    std::deque<SyncedPair>  pairQueue_;
+    mutable std::mutex      pairQueueMutex_;
+    std::atomic<uint64_t>   pairQueueDropCount_{0};
 
     // ── Optional user callback ─────────────────────────────────────────
     PairCallback      callback_;

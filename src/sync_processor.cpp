@@ -68,6 +68,20 @@ bool SyncProcessor::getLatestPair(SyncedPair &out) {
     return true;
 }
 
+bool SyncProcessor::popPair(SyncedPair &out) {
+    std::lock_guard<std::mutex> lock(pairQueueMutex_);
+    if (pairQueue_.empty()) return false;
+
+    out = std::move(pairQueue_.front());
+    pairQueue_.pop_front();
+    return true;
+}
+
+size_t SyncProcessor::pairQueueSize() const {
+    std::lock_guard<std::mutex> lock(pairQueueMutex_);
+    return pairQueue_.size();
+}
+
 void SyncProcessor::setCallback(PairCallback cb) {
     std::lock_guard<std::mutex> lock(cbMutex_);
     callback_ = std::move(cb);
@@ -277,6 +291,15 @@ void SyncProcessor::syncLoop() {
             }
 
             {
+                std::lock_guard<std::mutex> lock(pairQueueMutex_);
+                if (pairQueue_.size() >= MAX_PAIR_QUEUE) {
+                    pairQueue_.pop_front();
+                    pairQueueDropCount_.fetch_add(1);
+                }
+                pairQueue_.push_back(pair);
+            }
+
+            {
                 std::lock_guard<std::mutex> lock(cbMutex_);
                 if (callback_) {
                     callback_(pair);
@@ -349,6 +372,7 @@ void SyncProcessor::syncLoop() {
             blk.section("Sync");
             blk.kv("OrbBuf", orbBuf_.size());
             blk.kv("EvsBuf", evsBuf_.size());
+            blk.kv("PairQueue", pairQueueSize());
             blk.kv("Drift", std::to_string(drift) + " us");
             blk.kvf("AvgClockDiff", avgDiff, 1, " us");
             blk.kvf("MaxClockDiff", maxDiff, 1, " us");
@@ -356,6 +380,7 @@ void SyncProcessor::syncLoop() {
             blk.section("Drops");
             blk.kv("OrbDrop", orbDropCount_);
             blk.kv("EvsSkip", evsDropCount_);
+            blk.kv("PairQueueDrop", pairQueueDropCount_.load());
 
             if (orbBuf_.size() > MAX_LEAD || evsBuf_.size() > MAX_LEAD) {
                 blk.sep();

@@ -66,9 +66,6 @@ private:
         uint64_t                idx;
         OrbbecFrameData         orbbec;
         EventSliceData          events;
-        // For image writer: carry event slice t0imestamps (µs)
-        uint64_t                evStartTs = 0;
-        uint64_t                evEndTs   = 0;
     };
 
     // ── HDF5 writer pool (serialised internally via g_hdf5Mutex) ───────

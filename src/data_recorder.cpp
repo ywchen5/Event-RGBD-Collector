@@ -171,9 +171,6 @@ void DataRecorder::enqueue(const SyncedPair &pair) {
         WriteTask imgTask;
         imgTask.idx    = task.idx;
         imgTask.orbbec = std::move(task.orbbec);
-        // carry event slice timestamps for images metadata
-        imgTask.evStartTs = task.events.startTs;
-        imgTask.evEndTs   = task.events.endTs;
         // imgTask.events left empty – not needed for images
 
         std::lock_guard<std::mutex> lk(imageQueueMutex_);
@@ -396,19 +393,24 @@ void DataRecorder::writeImages(const WriteTask &task) {
         Log::error("Recorder", "Depth write error for " + idxStr + ": " + e.what());
     }
 
-    // Append images.txt with filename and start/end timestamps (µs)
+    // Append images.txt with the actual Orbbec timestamps for each image.
+    // A still image has one SDK timestamp rather than an interval, so the
+    // start/end fields are both set to that image's own timestamp.
     try {
-        uint64_t evStart = task.evStartTs;
-        uint64_t evEnd   = task.evEndTs;
-        if (evStart == 0) evStart = task.orbbec.colorTimestampUs ? task.orbbec.colorTimestampUs : task.orbbec.depthTimestampUs;
-        if (evEnd == 0)   evEnd   = task.orbbec.depthTimestampUs ? task.orbbec.depthTimestampUs : task.orbbec.colorTimestampUs;
-
         std::lock_guard<std::mutex> lk(imagesTxtMutex_);
         std::string listPath = (frameDir_ / "images.txt").string();
         std::ofstream ofs(listPath, std::ios::app);
         if (ofs) {
-            if (wroteRgb) ofs << std::filesystem::path(writtenRgbPath).filename().string() << " " << evStart << " " << evEnd << "\n";
-            if (wroteDepth) ofs << std::filesystem::path(writtenDepthPath).filename().string() << " " << evStart << " " << evEnd << "\n";
+            if (wroteRgb) {
+                uint64_t ts = task.orbbec.colorTimestampUs;
+                ofs << std::filesystem::path(writtenRgbPath).filename().string()
+                    << " " << ts << " " << ts << "\n";
+            }
+            if (wroteDepth) {
+                uint64_t ts = task.orbbec.depthTimestampUs;
+                ofs << std::filesystem::path(writtenDepthPath).filename().string()
+                    << " " << ts << " " << ts << "\n";
+            }
             ofs.close();
         } else {
             Log::error("Recorder", "Failed to open images.txt for append: " + listPath);

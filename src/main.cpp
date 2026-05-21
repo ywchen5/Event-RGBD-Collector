@@ -325,7 +325,13 @@ int main(int argc, char *argv[]) {
 
         if (hasEventCam && sync) {
             // ── Synced mode: consume matched pairs ──────────────────────
-            if (sync->getLatestPair(pair) && pair.valid) {
+            SyncedPair displayPair;
+            bool hasDisplayPair = false;
+
+            while (sync->popPair(pair)) {
+                if (!pair.valid) {
+                    continue;
+                }
                 gotFrame = true;
                 pairCount++;
 
@@ -336,20 +342,25 @@ int main(int argc, char *argv[]) {
 
                 // ── Update panel images ─────────────────────────────────
                 if (displayEnabled) {
-                    cv::Mat evFrame = cdFrameToMat(pair.cdFrame);
-                    if (!evFrame.empty()) {
-                        cv::resize(evFrame, panelEvent, cv::Size(PANEL_W, PANEL_H));
-                    }
+                    displayPair = pair;
+                    hasDisplayPair = true;
+                }
+            }
 
-                    cv::Mat rgb = decodeColor(pair.orbbec);
-                    if (!rgb.empty()) {
-                        cv::resize(rgb, panelRGB, cv::Size(PANEL_W, PANEL_H));
-                    }
+            if (displayEnabled && hasDisplayPair) {
+                cv::Mat evFrame = cdFrameToMat(displayPair.cdFrame);
+                if (!evFrame.empty()) {
+                    cv::resize(evFrame, panelEvent, cv::Size(PANEL_W, PANEL_H));
+                }
 
-                    cv::Mat depthJet = coloriseDepth(pair.orbbec);
-                    if (!depthJet.empty()) {
-                        cv::resize(depthJet, panelDepth, cv::Size(PANEL_W, PANEL_H));
-                    }
+                cv::Mat rgb = decodeColor(displayPair.orbbec);
+                if (!rgb.empty()) {
+                    cv::resize(rgb, panelRGB, cv::Size(PANEL_W, PANEL_H));
+                }
+
+                cv::Mat depthJet = coloriseDepth(displayPair.orbbec);
+                if (!depthJet.empty()) {
+                    cv::resize(depthJet, panelDepth, cv::Size(PANEL_W, PANEL_H));
                 }
             }
         } else {
