@@ -228,7 +228,8 @@ void SyncProcessor::syncLoop() {
         while (!orbBuf_.empty() && !evsBuf_.empty()) {
 
             int64_t orbTs       = static_cast<int64_t>(orbBuf_.front().colorTimestampUs);
-            int64_t mappedOrbTs = orbTs + deltaOrbToEvs_;
+            int64_t pairDeltaOrbToEvs = deltaOrbToEvs_;
+            int64_t mappedOrbTs = orbTs + pairDeltaOrbToEvs;
 
             // --- Find closest event slice ------------------------------------
             size_t  bestIdx  = 0;
@@ -274,6 +275,9 @@ void SyncProcessor::syncLoop() {
             pair.events      = std::move(evsData);
             pair.seqNum      = nextSeq_++;
             pair.clockDiffUs = clockDiff;
+            pair.deltaOrbToEvsUs = pairDeltaOrbToEvs;
+            pair.mappedColorTimestampUs = static_cast<int64_t>(pair.orbbec.colorTimestampUs) + pairDeltaOrbToEvs;
+            pair.mappedDepthTimestampUs = static_cast<int64_t>(pair.orbbec.depthTimestampUs) + pairDeltaOrbToEvs;
             pair.valid       = true;
 
             pairCount_++;

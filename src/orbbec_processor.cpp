@@ -1,6 +1,7 @@
 #include "orbbec_processor.hpp"
 #include "logger.hpp"
 #include <chrono>
+#include <cstdlib>
 #include <cstring>
 
 // ============================================================================
@@ -82,8 +83,9 @@ OrbbecProcessor::OrbbecProcessor() {
         Log::error("Orbbec", std::string("Failed to set multi-device sync: ") + e.what());
     }
 
-    // ── Start pipeline (no frame-sync so that hardware sync dominates) ─
-    pipeline_->disableFrameSync(); // @code-review: no software sync needed to acquire accurate timestamps
+    // ── Start pipeline with RGB/depth frame synchronization ─
+    config_->setFrameAggregateOutputMode(OB_FRAME_AGGREGATE_OUTPUT_ALL_TYPE_FRAME_REQUIRE);
+    pipeline_->enableFrameSync();
     pipeline_->start(config_);
 
     // ── Software Align filter (Depth→Color) ────────────────────────
@@ -202,14 +204,31 @@ void OrbbecProcessor::processingLoop() {
             // ── Timestamps ─────────────────────────────────────────────
             uint64_t oColorTs = colorFrame->timeStampUs();
             uint64_t oDepthTs = depthFrame->timeStampUs();
+            const int64_t rawDeltaUs = static_cast<int64_t>(rawColor->timeStampUs())
+                                     - static_cast<int64_t>(rawDepth->timeStampUs());
+            const int64_t alignedDeltaUs = static_cast<int64_t>(oColorTs)
+                                         - static_cast<int64_t>(oDepthTs);
 
             // First-frame logging (mirrors the Python version)
             if (!firstFrameLogged_) {
+                Log::info("Orbbec", "First raw pair - color_idx=" + std::to_string(rawColor->index())
+                         + " depth_idx=" + std::to_string(rawDepth->index())
+                         + " color_ts=" + std::to_string(rawColor->timeStampUs())
+                         + " depth_ts=" + std::to_string(rawDepth->timeStampUs())
+                         + " delta=" + std::to_string(rawDeltaUs) + " us");
                 Log::info("Orbbec", "First color frame - device_ts=" + std::to_string(oColorTs)
+                         + " idx=" + std::to_string(colorFrame->index())
                          + " us  sys_ts=" + std::to_string(colorFrame->systemTimeStampUs()) + " us");
                 Log::info("Orbbec", "First depth frame - device_ts=" + std::to_string(oDepthTs)
+                         + " idx=" + std::to_string(depthFrame->index())
                          + " us  sys_ts=" + std::to_string(depthFrame->systemTimeStampUs()) + " us");
+                Log::info("Orbbec", "First aligned pair delta=" + std::to_string(alignedDeltaUs) + " us");
                 firstFrameLogged_ = true;
+            }
+            if (fpsFrameCount % 30 == 0 && std::llabs(alignedDeltaUs) > 5000) {
+                Log::warn("Orbbec", "RGB/depth timestamp delta is large: raw_delta="
+                         + std::to_string(rawDeltaUs) + " us aligned_delta="
+                         + std::to_string(alignedDeltaUs) + " us");
             }
 
             // ── Color → raw bytes ──────────────────────────────────────

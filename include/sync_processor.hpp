@@ -35,6 +35,12 @@ struct SyncedPair {
     //   = events.startTs − (orbbec.colorTimestampUs + deltaOrbToEvs)
     int64_t          clockDiffUs = 0;
 
+    // Orbbec timestamps mapped into the event-camera timestamp domain using
+    // the sync processor's current deltaOrbToEvs estimate.
+    int64_t          mappedColorTimestampUs = 0;
+    int64_t          mappedDepthTimestampUs = 0;
+    int64_t          deltaOrbToEvsUs = 0;
+
     bool valid = false;
 };
 

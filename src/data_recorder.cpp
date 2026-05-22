@@ -153,6 +153,13 @@ void DataRecorder::enqueue(const SyncedPair &pair) {
     task.idx    = recordIdx_.fetch_add(1);
     task.orbbec = pair.orbbec;      // copy
     task.events = pair.events;      // copy
+    task.eventStartTs = pair.events.startTs;
+    task.eventEndTs = pair.events.endTs;
+    task.seqNum = pair.seqNum;
+    task.clockDiffUs = pair.clockDiffUs;
+    task.deltaOrbToEvsUs = pair.deltaOrbToEvsUs;
+    task.mappedColorTimestampUs = pair.mappedColorTimestampUs;
+    task.mappedDepthTimestampUs = pair.mappedDepthTimestampUs;
 
     // ── Push to HDF5 queue ──────────────────────────────────────────────
     {
@@ -171,6 +178,13 @@ void DataRecorder::enqueue(const SyncedPair &pair) {
         WriteTask imgTask;
         imgTask.idx    = task.idx;
         imgTask.orbbec = std::move(task.orbbec);
+        imgTask.eventStartTs = task.eventStartTs;
+        imgTask.eventEndTs = task.eventEndTs;
+        imgTask.seqNum = task.seqNum;
+        imgTask.clockDiffUs = task.clockDiffUs;
+        imgTask.deltaOrbToEvsUs = task.deltaOrbToEvsUs;
+        imgTask.mappedColorTimestampUs = task.mappedColorTimestampUs;
+        imgTask.mappedDepthTimestampUs = task.mappedDepthTimestampUs;
         // imgTask.events left empty – not needed for images
 
         std::lock_guard<std::mutex> lk(imageQueueMutex_);
@@ -418,5 +432,48 @@ void DataRecorder::writeImages(const WriteTask &task) {
     }
     catch (const std::exception &e) {
         Log::error("Recorder", "images.txt write error for " + idxStr + ": " + e.what());
+    }
+
+    // Append a machine-readable timestamp diagnostic file.  The mapped_* fields
+    // are Orbbec hardware timestamps transformed into the event-camera timeline.
+    try {
+        std::lock_guard<std::mutex> lk(imagesTxtMutex_);
+        std::filesystem::path csvPath = frameDir_ / "sync_timestamps.csv";
+        const bool writeHeader = !std::filesystem::exists(csvPath);
+        std::ofstream ofs(csvPath.string(), std::ios::app);
+        if (ofs) {
+            if (writeHeader) {
+                ofs << "idx,seq_num,rgb_file,depth_file,"
+                    << "rgb_raw_ts_us,depth_raw_ts_us,"
+                    << "rgb_mapped_event_ts_us,depth_mapped_event_ts_us,"
+                    << "event_start_ts_us,event_end_ts_us,"
+                    << "delta_orbbec_to_event_us,event_minus_rgb_mapped_us,"
+                    << "depth_minus_rgb_raw_us,depth_minus_rgb_mapped_us\n";
+            }
+            const int64_t depthMinusRgbRaw =
+                static_cast<int64_t>(task.orbbec.depthTimestampUs)
+                - static_cast<int64_t>(task.orbbec.colorTimestampUs);
+            const int64_t depthMinusRgbMapped =
+                task.mappedDepthTimestampUs - task.mappedColorTimestampUs;
+            ofs << task.idx << ","
+                << task.seqNum << ","
+                << (wroteRgb ? std::filesystem::path(writtenRgbPath).filename().string() : "") << ","
+                << (wroteDepth ? std::filesystem::path(writtenDepthPath).filename().string() : "") << ","
+                << task.orbbec.colorTimestampUs << ","
+                << task.orbbec.depthTimestampUs << ","
+                << task.mappedColorTimestampUs << ","
+                << task.mappedDepthTimestampUs << ","
+                << task.eventStartTs << ","
+                << task.eventEndTs << ","
+                << task.deltaOrbToEvsUs << ","
+                << task.clockDiffUs << ","
+                << depthMinusRgbRaw << ","
+                << depthMinusRgbMapped << "\n";
+        } else {
+            Log::error("Recorder", "Failed to open sync_timestamps.csv for append: " + csvPath.string());
+        }
+    }
+    catch (const std::exception &e) {
+        Log::error("Recorder", "sync_timestamps.csv write error for " + idxStr + ": " + e.what());
     }
 }
