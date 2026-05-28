@@ -273,6 +273,7 @@ void OrbbecProcessor::processingLoop() {
                     frameQueue_.pop_front();  // drop oldest
                 }
                 frameQueue_.push_back(std::move(frame));
+                producedFrameCount_.fetch_add(1);
                 newFrameReady_.store(true);
             }
 

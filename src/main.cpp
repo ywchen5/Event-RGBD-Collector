@@ -246,7 +246,7 @@ int main(int argc, char *argv[]) {
     bool displayEnabled = !hasFlag(argc, argv, "--no-display");
     std::string outputRoot = getFlagValue(argc, argv, "--output",
                              getFlagValue(argc, argv, "-o", "./output"));
-    int64_t maxSyncedPairs = getInt64FlagValue(argc, argv, "--max-synced-pairs", 3);
+    int64_t maxSyncedPairs = getInt64FlagValue(argc, argv, "--max-synced-pairs", 6);
     std::string rawFile = getPositional(argc, argv);
 
     if (storeEnabled) {
@@ -375,6 +375,13 @@ int main(int argc, char *argv[]) {
                     pairCount >= static_cast<uint64_t>(maxSyncedPairs)) {
                     Log::info("Main", "Reached diagnostic capture limit: "
                               + std::to_string(pairCount) + " synced pairs.");
+                    Log::info("Main", "Producer counts at limit: OrbbecFrames="
+                              + std::to_string(orbbec->producedFrameCount())
+                              + "  OrbbecQueue=" + std::to_string(orbbec->queueSize())
+                              + "  EventTrigAccepted=" + std::to_string(prophesee->trigAccepted())
+                              + "  EventTrigRejected=" + std::to_string(prophesee->trigRejected())
+                              + "  EventSliceQueue=" + std::to_string(prophesee->sliceQueueSize())
+                              + "  SyncedPairsConsumed=" + std::to_string(pairCount));
                     g_stop.store(true);
                     break;
                 }

@@ -68,6 +68,9 @@ public:
     /// Number of frames currently queued.
     size_t queueSize() const;
 
+    /// Total valid RGBD framesets published by the worker thread.
+    uint64_t producedFrameCount() const { return producedFrameCount_.load(); }
+
     /// Check whether the processing thread is running.
     bool isRunning() const { return running_.load(); }
 
@@ -96,6 +99,7 @@ private:
 
     // ── Stats (readable from SyncProcessor monitor) ─────────────────────
     std::atomic<double> orbFps_{0.0};
+    std::atomic<uint64_t> producedFrameCount_{0};
 public:
     double fps() const { return orbFps_.load(); }
 private:
