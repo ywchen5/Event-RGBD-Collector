@@ -106,12 +106,9 @@ void SyncProcessor::setCallback(PairCallback cb) {
 //  Strategy:
 //    1. Wait until both buffers have ≥ MIN_BOOTSTRAP_SAMPLES entries,
 //       which proves both devices are actively streaming.
-//    2. Flush all but the LAST entry on each side — the most recent
-//       data is the only data that can possibly be co-triggered.
-//    3. Initialise deltaOrbToEvs_ from that pair.
-//    4. The first few pairs after this may still have a residual
-//       offset, but the EMA drift-tracking (alpha=0.1) converges
-//       within ~10 frames.
+//    2. In this diagnostic branch, keep startup buffers intact.
+//    3. Initialise deltaOrbToEvs_ from the first available pair.
+//    4. Record only a few pairs so startup ordering can be inspected.
 //
 bool SyncProcessor::bootstrapAlignment() {
     if (orbBuf_.size() < MIN_BOOTSTRAP_SAMPLES ||
@@ -119,22 +116,14 @@ bool SyncProcessor::bootstrapAlignment() {
         return false;   // not enough data yet — at least one side is still warming up
     }
 
-    // ── Flush all but the newest on each side ───────────────────────────
+    // Diagnostic branch: do not discard startup samples. This lets the
+    // saved 000000/000001/000002 pairs show the first samples delivered
+    // by each producer instead of the post-bootstrap newest samples.
     size_t orbDiscarded = 0;
-    while (orbBuf_.size() > 1) {
-        orbBuf_.pop_front();
-        orbDiscarded++;
-        orbDropCount_++;
-    }
 
     size_t evsDiscarded = 0;
-    while (evsBuf_.size() > 1) {
-        evsBuf_.pop_front();
-        evsDiscarded++;
-        evsDropCount_++;
-    }
 
-    // ── Initialise delta from the newest pair ───────────────────────────
+    // Initialise delta from the first startup pair.
     int64_t orbTs = static_cast<int64_t>(orbBuf_.front().colorTimestampUs);
     int64_t evsTs = evsBuf_.front().startTs;
     deltaOrbToEvs_ = evsTs - orbTs;

@@ -126,7 +126,7 @@ private:
     //    from both sides, then find the first real match.  This handles
     //    the case where one device starts much earlier than the other.
     bool     aligned_               = false;
-    static constexpr size_t MIN_BOOTSTRAP_SAMPLES = 5;  // need ≥5 on each side
+    static constexpr size_t MIN_BOOTSTRAP_SAMPLES = 1;  // diagnostic: keep startup frames
 
     // ── Internal FIFO buffers ──────────────────────────────────────────
     //    Drain the per-sensor front-buffers into these deques so that

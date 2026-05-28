@@ -16,6 +16,7 @@
 #include <memory>
 #include <string>
 #include <cstring>
+#include <exception>
 
 // OpenCV for visualisation
 #include <opencv2/core.hpp>
@@ -51,6 +52,20 @@ static std::string getFlagValue(int argc, char *argv[], const char *flag,
     return defaultVal;
 }
 
+static int64_t getInt64FlagValue(int argc, char *argv[], const char *flag,
+                                 int64_t defaultVal = 0) {
+    std::string value = getFlagValue(argc, argv, flag, "");
+    if (value.empty()) return defaultVal;
+    try {
+        return std::stoll(value);
+    }
+    catch (const std::exception &) {
+        Log::warn("Main", std::string("Invalid integer for ") + flag + ": " + value
+                  + ". Using " + std::to_string(defaultVal) + ".");
+        return defaultVal;
+    }
+}
+
 // Get first positional argument (non-flag, non-flag-value)
 // @code-review: also an identifier function
 static std::string getPositional(int argc, char *argv[]) {
@@ -59,7 +74,18 @@ static std::string getPositional(int argc, char *argv[]) {
         if (std::strcmp(argv[i], "--store") == 0) continue;
         if (std::strcmp(argv[i], "--no-display") == 0) continue;
         if (std::strcmp(argv[i], "--output") == 0 ||
-            std::strcmp(argv[i], "-o") == 0) {
+            std::strcmp(argv[i], "-o") == 0 ||
+            std::strcmp(argv[i], "--max-synced-pairs") == 0 ||
+            std::strcmp(argv[i], "--rgb-event-offset-us") == 0 ||
+            std::strcmp(argv[i], "--rgb-event-offset-frames") == 0 ||
+            std::strcmp(argv[i], "--color-format") == 0 ||
+            std::strcmp(argv[i], "--color-auto-exposure") == 0 ||
+            std::strcmp(argv[i], "--color-exposure") == 0 ||
+            std::strcmp(argv[i], "--color-gain") == 0 ||
+            std::strcmp(argv[i], "--color-auto-white-balance") == 0 ||
+            std::strcmp(argv[i], "--color-white-balance") == 0 ||
+            std::strcmp(argv[i], "--color-auto-exposure-priority") == 0 ||
+            std::strcmp(argv[i], "--color-power-line-frequency") == 0) {
             ++i;  // skip the value after --output/-o
             continue;
         }
@@ -220,6 +246,7 @@ int main(int argc, char *argv[]) {
     bool displayEnabled = !hasFlag(argc, argv, "--no-display");
     std::string outputRoot = getFlagValue(argc, argv, "--output",
                              getFlagValue(argc, argv, "-o", "./output"));
+    int64_t maxSyncedPairs = getInt64FlagValue(argc, argv, "--max-synced-pairs", 3);
     std::string rawFile = getPositional(argc, argv);
 
     if (storeEnabled) {
@@ -227,6 +254,10 @@ int main(int argc, char *argv[]) {
     }
     if (displayEnabled) {
         Log::info("Main", "Visualisation enabled.  Press 'q' or ESC to quit.");
+    }
+    if (maxSyncedPairs > 0) {
+        Log::info("Main", "Diagnostic capture limit: "
+                  + std::to_string(maxSyncedPairs) + " synced pairs.");
     }
 
     // ════════════════════════════════════════════════════════════════════
@@ -338,6 +369,14 @@ int main(int argc, char *argv[]) {
                 // Record to disk if --store is active
                 if (recorder) {
                     recorder->enqueue(pair);
+                }
+
+                if (maxSyncedPairs > 0 &&
+                    pairCount >= static_cast<uint64_t>(maxSyncedPairs)) {
+                    Log::info("Main", "Reached diagnostic capture limit: "
+                              + std::to_string(pairCount) + " synced pairs.");
+                    g_stop.store(true);
+                    break;
                 }
 
                 // ── Update panel images ─────────────────────────────────
