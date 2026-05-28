@@ -9,10 +9,41 @@
 #include <vector>
 #include <deque>
 #include <cstring>
+#include <array>
+#include <string>
+#include <optional>
 
 // OrbbecSDK
 #include "libobsensor/ObSensor.hpp"
 #include "libobsensor/hpp/Error.hpp"
+
+struct OrbbecMetadataSnapshot {
+    uint32_t metadataSize = 0;
+    std::string metadataHex;
+    std::array<int64_t, static_cast<size_t>(OB_FRAME_METADATA_TYPE_COUNT)> values{};
+    int64_t timestamp = -1;
+    int64_t sensorTimestamp = -1;
+    int64_t frameNumber = -1;
+    int64_t autoExposure = -1;
+    int64_t exposure = -1;
+    int64_t gain = -1;
+    int64_t actualFrameRate = -1;
+    int64_t frameRate = -1;
+    int64_t gpioInputData = -1;
+};
+
+struct OrbbecColorControlConfig {
+    bool logSupportedProperties = true;
+    OBFormat colorFormat = OB_FORMAT_MJPG;
+    std::string colorFormatName = "MJPG";
+    std::optional<bool> autoExposure;
+    std::optional<int32_t> exposure;
+    std::optional<int32_t> gain;
+    std::optional<bool> autoWhiteBalance;
+    std::optional<int32_t> whiteBalance;
+    std::optional<int32_t> autoExposurePriority;
+    std::optional<int32_t> powerLineFrequency;
+};
 
 /**
  * @brief Struct to hold a single frame result from the Orbbec camera.
@@ -23,6 +54,7 @@ struct OrbbecFrameData {
     std::vector<uint8_t> colorData;
     uint32_t colorWidth  = 0;
     uint32_t colorHeight = 0;
+    OBFormat colorFormat = OB_FORMAT_UNKNOWN;
 
     // Depth image (uint16, row-major, unit: raw depth units)
     std::vector<uint16_t> depthData;
@@ -32,6 +64,36 @@ struct OrbbecFrameData {
     // Timestamps (microseconds, device clock)
     uint64_t colorTimestampUs = 0;
     uint64_t depthTimestampUs = 0;
+    uint64_t colorSystemTimestampUs = 0;
+    uint64_t depthSystemTimestampUs = 0;
+    uint64_t colorGlobalTimestampUs = 0;
+    uint64_t depthGlobalTimestampUs = 0;
+
+    // SDK frame indices.  The raw_* fields are before align filtering; the
+    // color/depth fields are from the aligned frames actually saved.
+    uint64_t colorFrameIndex = 0;
+    uint64_t depthFrameIndex = 0;
+    uint64_t rawColorFrameIndex = 0;
+    uint64_t rawDepthFrameIndex = 0;
+    uint64_t rawColorTimestampUs = 0;
+    uint64_t rawDepthTimestampUs = 0;
+    uint64_t rawColorSystemTimestampUs = 0;
+    uint64_t rawDepthSystemTimestampUs = 0;
+    uint64_t rawColorGlobalTimestampUs = 0;
+    uint64_t rawDepthGlobalTimestampUs = 0;
+
+    OrbbecMetadataSnapshot colorMetadata;
+    OrbbecMetadataSnapshot depthMetadata;
+    OrbbecMetadataSnapshot rawColorMetadata;
+    OrbbecMetadataSnapshot rawDepthMetadata;
+
+    int32_t colorAutoExposure = -1;
+    int32_t colorExposure = -1;
+    int32_t colorGain = -1;
+    int32_t colorAutoWhiteBalance = -1;
+    int32_t colorWhiteBalance = -1;
+    int32_t colorAutoExposurePriority = -1;
+    int32_t colorPowerLineFrequency = -1;
 
     bool valid = false;
 };
@@ -48,7 +110,7 @@ struct OrbbecFrameData {
  */
 class OrbbecProcessor {
 public:
-    OrbbecProcessor();
+    explicit OrbbecProcessor(const OrbbecColorControlConfig &colorControl = {});
     ~OrbbecProcessor();
 
     /// Start the processing thread.  Non-blocking.
@@ -74,6 +136,10 @@ public:
 private:
     /// The actual processing loop executed on the worker thread.
     void processingLoop();
+    void logSupportedDeviceProperties() const;
+    void applyColorControl();
+    int32_t readIntPropertyOrDefault(OBPropertyID propertyId, int32_t defaultValue = -1) const;
+    int32_t readBoolPropertyOrDefault(OBPropertyID propertyId, int32_t defaultValue = -1) const;
 
     // ── OrbbecSDK objects ──────────────────────────────────────────────
     std::shared_ptr<ob::Pipeline>          pipeline_;
@@ -82,6 +148,7 @@ private:
     std::unique_ptr<ob::Align>             alignFilter_;
 
     bool hasColor_ = false;
+    OrbbecColorControlConfig colorControl_;
 
     // ── Color intrinsics (for FOV computation) ─────────────────────────
     struct Intrinsics {

@@ -204,7 +204,7 @@ void PropheseeProcessor::processingLoop() {
                     continue;  // skip this trigger
                 }
 
-                trigAccepted_++;
+                const uint64_t currentTriggerSeq = trigAccepted_.fetch_add(1);
                 // @code-review: here the triggerActive_ design indicates that
                 //    the trigger can only be activated once, so do not test the case where
                 //    the trigger is deactivated and then reactivated for now.
@@ -214,6 +214,7 @@ void PropheseeProcessor::processingLoop() {
                     // ── First trigger activation ───────────────────────
                     triggerActive_ = true;
                     lastTriggerTs_ = currentTrigTs;
+                    lastTriggerSeq_ = currentTriggerSeq;
 
                     // Any events in the buffer that are AFTER the trigger
                     // belong to the first slice interval → keep them.
@@ -249,6 +250,8 @@ void PropheseeProcessor::processingLoop() {
                         slice.events  = std::move(sliceEvents);
                         slice.startTs = lastTriggerTs_;
                         slice.endTs   = currentTrigTs;
+                        slice.triggerStartSeq = lastTriggerSeq_;
+                        slice.triggerEndSeq = currentTriggerSeq;
                         slice.valid   = true;
 
                         {
@@ -262,6 +265,7 @@ void PropheseeProcessor::processingLoop() {
                     }
 
                     lastTriggerTs_ = currentTrigTs;
+                    lastTriggerSeq_ = currentTriggerSeq;
                 }
             }
         });

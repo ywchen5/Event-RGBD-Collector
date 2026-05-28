@@ -16,12 +16,15 @@ constexpr double PI = 3.14159265358979323846;
 // ============================================================================
 
 SyncProcessor::SyncProcessor(OrbbecProcessor &orbbec,
-                             PropheseeProcessor &prophesee)
+                             PropheseeProcessor &prophesee,
+                             int64_t rgbEventVisualOffsetUs)
     : orbbec_(orbbec)
     , prophesee_(prophesee)
+    , rgbEventVisualOffsetUs_(rgbEventVisualOffsetUs)
     , startTime_(std::chrono::steady_clock::now())
 {
-    Log::info("Sync", "Initialised.");
+    Log::info("Sync", "Initialised. RGB-event visual offset: "
+              + std::to_string(rgbEventVisualOffsetUs_) + " us.");
 }
 
 SyncProcessor::~SyncProcessor() {
@@ -106,44 +109,82 @@ void SyncProcessor::setCallback(PairCallback cb) {
 //  Strategy:
 //    1. Wait until both buffers have ≥ MIN_BOOTSTRAP_SAMPLES entries,
 //       which proves both devices are actively streaming.
-//    2. Flush all but the LAST entry on each side — the most recent
-//       data is the only data that can possibly be co-triggered.
-//    3. Initialise deltaOrbToEvs_ from that pair.
-//    4. The first few pairs after this may still have a residual
+//    2. Align the common startup window by discarding old front samples
+//       only.  If one side already has newer surplus samples, keep them
+//       queued for future frames instead of throwing them away.
+//    3. Move the LAST entry in the common startup window to the front.
+//    4. Initialise deltaOrbToEvs_ from that pair.
+//    5. The first few pairs after this may still have a residual
 //       offset, but the EMA drift-tracking (alpha=0.1) converges
 //       within ~10 frames.
 //
 bool SyncProcessor::bootstrapAlignment() {
+    size_t requiredEvsSamples = MIN_BOOTSTRAP_SAMPLES;
+    if (rgbEventVisualOffsetUs_ > 0) {
+        requiredEvsSamples += static_cast<size_t>(rgbEventVisualOffsetUs_ / FRAME_INTERVAL_US) + 2;
+    }
+
     if (orbBuf_.size() < MIN_BOOTSTRAP_SAMPLES ||
-        evsBuf_.size() < MIN_BOOTSTRAP_SAMPLES) {
+        evsBuf_.size() < requiredEvsSamples) {
         return false;   // not enough data yet — at least one side is still warming up
     }
 
-    // ── Flush all but the newest on each side ───────────────────────────
+    const size_t orbInitialSize = orbBuf_.size();
+    const size_t evsInitialSize = evsBuf_.size();
+
     size_t orbDiscarded = 0;
-    while (orbBuf_.size() > 1) {
+    size_t evsDiscarded = 0;
+    const size_t commonCount = std::min(orbBuf_.size(), evsBuf_.size());
+
+    const size_t visualOffsetFrames =
+        rgbEventVisualOffsetUs_ > 0
+            ? static_cast<size_t>((rgbEventVisualOffsetUs_ + FRAME_INTERVAL_US - 1) / FRAME_INTERVAL_US)
+            : 0;
+    const size_t evsBootstrapKeep = std::min(commonCount, visualOffsetFrames + 1);
+
+    // Move the common-window tail to the Orbbec front.  Any newer Orbbec
+    // samples after that tail remain queued for future event slices.
+    for (size_t i = 0; i + 1 < commonCount; ++i) {
         orbBuf_.pop_front();
         orbDiscarded++;
         orbDropCount_++;
     }
 
-    size_t evsDiscarded = 0;
-    while (evsBuf_.size() > 1) {
+    // Keep enough earlier event slices for a positive visual offset, plus
+    // any newer event surplus after the common-window tail.  For example,
+    // with common tail E5 and --rgb-event-offset-frames 2, keep E3,E4,E5
+    // at the front and also retain E6,E7 if they already arrived.
+    const size_t evsFrontDiscard = commonCount - evsBootstrapKeep;
+    for (size_t i = 0; i < evsFrontDiscard; ++i) {
         evsBuf_.pop_front();
         evsDiscarded++;
         evsDropCount_++;
     }
 
-    // ── Initialise delta from the newest pair ───────────────────────────
+    // Initialise delta from the trigger-sequence-aligned event, not from
+    // an earlier visual-offset candidate at the front.
     int64_t orbTs = static_cast<int64_t>(orbBuf_.front().colorTimestampUs);
-    int64_t evsTs = evsBuf_.front().startTs;
+    const size_t evsAnchorIdx = evsBootstrapKeep - 1;
+    int64_t evsTs = evsBuf_[evsAnchorIdx].startTs;
     deltaOrbToEvs_ = evsTs - orbTs;
     initialDelta_  = deltaOrbToEvs_;
 
     {
         Log::LogBlock blk("Bootstrap Alignment");
+        blk.kv("Orb initial", orbInitialSize);
+        blk.kv("Evs initial", evsInitialSize);
+        blk.kv("Common count", commonCount);
         blk.kv("Orb discarded", orbDiscarded);
         blk.kv("Evs discarded", evsDiscarded);
+        blk.kv("Visual offset frames", visualOffsetFrames);
+        blk.kv("Evs kept", evsBuf_.size());
+        blk.kv("Orb selected frame", orbBuf_.front().colorFrameIndex);
+        blk.kv("Evs anchor seq", std::to_string(evsBuf_[evsAnchorIdx].triggerStartSeq)
+               + "->" + std::to_string(evsBuf_[evsAnchorIdx].triggerEndSeq));
+        blk.kv("Evs first kept seq", std::to_string(evsBuf_.front().triggerStartSeq)
+               + "->" + std::to_string(evsBuf_.front().triggerEndSeq));
+        blk.kv("Evs last kept seq", std::to_string(evsBuf_.back().triggerStartSeq)
+               + "->" + std::to_string(evsBuf_.back().triggerEndSeq));
         blk.kv("OrbTs", std::to_string(orbTs) + " us");
         blk.kv("EvsTs", std::to_string(evsTs) + " us");
         blk.kv("Delta (evs-orb)", std::to_string(deltaOrbToEvs_) + " us");
@@ -230,13 +271,14 @@ void SyncProcessor::syncLoop() {
             int64_t orbTs       = static_cast<int64_t>(orbBuf_.front().colorTimestampUs);
             int64_t pairDeltaOrbToEvs = deltaOrbToEvs_;
             int64_t mappedOrbTs = orbTs + pairDeltaOrbToEvs;
+            int64_t visualMappedOrbTs = mappedOrbTs - rgbEventVisualOffsetUs_;
 
             // --- Find closest event slice ------------------------------------
             size_t  bestIdx  = 0;
-            int64_t bestDiff = std::abs(evsBuf_[0].startTs - mappedOrbTs);
+            int64_t bestDiff = std::abs(evsBuf_[0].startTs - visualMappedOrbTs);
 
             for (size_t i = 1; i < evsBuf_.size(); ++i) {
-                int64_t diff = std::abs(evsBuf_[i].startTs - mappedOrbTs);
+                int64_t diff = std::abs(evsBuf_[i].startTs - visualMappedOrbTs);
                 if (diff < bestDiff) {
                     bestDiff = diff;
                     bestIdx  = i;
@@ -248,7 +290,7 @@ void SyncProcessor::syncLoop() {
             // If the best candidate is the very last entry AND still
             // in the future, wait for more slices before committing.
             if (bestIdx == evsBuf_.size() - 1 &&
-                evsBuf_[bestIdx].startTs > mappedOrbTs + FRAME_INTERVAL_US) {
+                evsBuf_[bestIdx].startTs > visualMappedOrbTs + FRAME_INTERVAL_US) {
                 break;
             }
 
@@ -264,10 +306,11 @@ void SyncProcessor::syncLoop() {
 
             int64_t evsTs     = evsData.startTs;
             int64_t clockDiff = evsTs - mappedOrbTs;
+            int64_t visualClockDiff = evsTs - visualMappedOrbTs;
 
             // EMA drift tracking
-            deltaOrbToEvs_ += static_cast<int64_t>(clockDiff * DRIFT_ALPHA);
-            diffSamples_.push_back(std::abs(clockDiff));
+            deltaOrbToEvs_ += static_cast<int64_t>(visualClockDiff * DRIFT_ALPHA);
+            diffSamples_.push_back(std::abs(visualClockDiff));
 
             // Build synchronised pair
             SyncedPair pair;
@@ -278,6 +321,9 @@ void SyncProcessor::syncLoop() {
             pair.deltaOrbToEvsUs = pairDeltaOrbToEvs;
             pair.mappedColorTimestampUs = static_cast<int64_t>(pair.orbbec.colorTimestampUs) + pairDeltaOrbToEvs;
             pair.mappedDepthTimestampUs = static_cast<int64_t>(pair.orbbec.depthTimestampUs) + pairDeltaOrbToEvs;
+            pair.rgbEventVisualOffsetUs = rgbEventVisualOffsetUs_;
+            pair.visualMappedColorTimestampUs = pair.mappedColorTimestampUs - rgbEventVisualOffsetUs_;
+            pair.visualClockDiffUs = visualClockDiff;
             pair.valid       = true;
 
             pairCount_++;

@@ -68,11 +68,16 @@ private:
         EventSliceData          events;
         int64_t                 eventStartTs = 0;
         int64_t                 eventEndTs = 0;
+        uint64_t                eventTriggerStartSeq = 0;
+        uint64_t                eventTriggerEndSeq = 0;
         uint64_t                seqNum = 0;
         int64_t                 clockDiffUs = 0;
         int64_t                 deltaOrbToEvsUs = 0;
         int64_t                 mappedColorTimestampUs = 0;
         int64_t                 mappedDepthTimestampUs = 0;
+        int64_t                 rgbEventVisualOffsetUs = 0;
+        int64_t                 visualMappedColorTimestampUs = 0;
+        int64_t                 visualClockDiffUs = 0;
     };
 
     // ── HDF5 writer pool (serialised internally via g_hdf5Mutex) ───────

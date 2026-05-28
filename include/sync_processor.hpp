@@ -40,6 +40,9 @@ struct SyncedPair {
     int64_t          mappedColorTimestampUs = 0;
     int64_t          mappedDepthTimestampUs = 0;
     int64_t          deltaOrbToEvsUs = 0;
+    int64_t          rgbEventVisualOffsetUs = 0;
+    int64_t          visualMappedColorTimestampUs = 0;
+    int64_t          visualClockDiffUs = 0;
 
     bool valid = false;
 };
@@ -81,7 +84,8 @@ public:
      * @param orbbec     Reference to a running OrbbecProcessor.
      * @param prophesee  Reference to a running PropheseeProcessor.
      */
-    SyncProcessor(OrbbecProcessor &orbbec, PropheseeProcessor &prophesee);
+    SyncProcessor(OrbbecProcessor &orbbec, PropheseeProcessor &prophesee,
+                  int64_t rgbEventVisualOffsetUs = 0);
     ~SyncProcessor();
 
     /// Start the sync thread.  Non-blocking.
@@ -126,7 +130,7 @@ private:
     //    from both sides, then find the first real match.  This handles
     //    the case where one device starts much earlier than the other.
     bool     aligned_               = false;
-    static constexpr size_t MIN_BOOTSTRAP_SAMPLES = 5;  // need ≥5 on each side
+    static constexpr size_t MIN_BOOTSTRAP_SAMPLES = 5;  // need >=5 on each side
 
     // ── Internal FIFO buffers ──────────────────────────────────────────
     //    Drain the per-sensor front-buffers into these deques so that
@@ -142,6 +146,7 @@ private:
     //    maintained every pair via EMA so clockDiff stays near zero.
     int64_t  deltaOrbToEvs_      = 0;     // µs
     int64_t  initialDelta_       = 0;
+    int64_t  rgbEventVisualOffsetUs_ = 0;
     static constexpr double DRIFT_ALPHA = 0.1;
 
     // ── Nearest-timestamp pairing ───────────────────────────────────────
