@@ -2,16 +2,20 @@
 #include "logger.hpp"
 #include <chrono>
 #include <cstring>
+#include <string>
 
 // ============================================================================
 //  Construction / Destruction
 // ============================================================================
 
-OrbbecProcessor::OrbbecProcessor() {
+OrbbecProcessor::OrbbecProcessor(const OrbbecColorControlConfig &colorControl)
+    : colorControl_(colorControl) {
     // ── Create pipeline & obtain device ────────────────────────────────
     pipeline_ = std::make_shared<ob::Pipeline>();
     device_   = pipeline_->getDevice();
     config_   = std::make_shared<ob::Config>();
+
+    applyColorControl();
 
     // ── Enable Depth stream (640x576 @ 30fps) ─────────────────────────
     auto depthProfiles = pipeline_->getStreamProfileList(OB_SENSOR_DEPTH);
@@ -25,8 +29,22 @@ OrbbecProcessor::OrbbecProcessor() {
     hasColor_ = false;
     try {
         auto colorProfiles = pipeline_->getStreamProfileList(OB_SENSOR_COLOR);
-        auto colorProfile  = colorProfiles->getVideoStreamProfile(
-            1920, 1080, OB_FORMAT_MJPG, 30); // @code-review: OB_FORMAT_MJPG might can be optimized to other formats which can be displayed and stored immediately without decoding, if supported by the camera
+        Log::info("Orbbec", "Requested color format: " + colorControl_.colorFormatName
+                 + " (" + std::to_string(static_cast<int>(colorControl_.colorFormat)) + ")");
+        std::shared_ptr<ob::VideoStreamProfile> colorProfile;
+        try {
+            colorProfile = colorProfiles->getVideoStreamProfile(
+                1920, 1080, colorControl_.colorFormat, 30);
+        }
+        catch (const std::exception &e) {
+            if (colorControl_.colorFormat == OB_FORMAT_MJPG) {
+                throw;
+            }
+            Log::warn("Orbbec", "Requested color format is not available: "
+                     + std::string(e.what()) + ". Falling back to MJPG.");
+            colorProfile = colorProfiles->getVideoStreamProfile(
+                1920, 1080, OB_FORMAT_MJPG, 30);
+        }
         config_->enableStream(colorProfile);
 
         Log::info("Orbbec", "Color profile: " + std::to_string(colorProfile->width()) + "x"
@@ -98,6 +116,97 @@ OrbbecProcessor::~OrbbecProcessor() {
         pipeline_->stop();
     }
     Log::info("Orbbec", "Destroyed.");
+}
+
+void OrbbecProcessor::applyColorControl() {
+    if (!device_) return;
+
+    auto setBool = [this](OBPropertyID id, bool value, const std::string &name) {
+        try {
+            if (!device_->isPropertySupported(id, OB_PERMISSION_WRITE) &&
+                !device_->isPropertySupported(id, OB_PERMISSION_READ_WRITE)) {
+                Log::warn("Orbbec", name + " is not writable on this device.");
+                return;
+            }
+            device_->setBoolProperty(id, value);
+            Log::info("Orbbec", "Set " + name + "=" + std::to_string(value));
+        }
+        catch (const std::exception &e) {
+            Log::warn("Orbbec", "Failed to set " + name + ": " + e.what());
+        }
+    };
+
+    auto setInt = [this](OBPropertyID id, int32_t value, const std::string &name) {
+        try {
+            if (!device_->isPropertySupported(id, OB_PERMISSION_WRITE) &&
+                !device_->isPropertySupported(id, OB_PERMISSION_READ_WRITE)) {
+                Log::warn("Orbbec", name + " is not writable on this device.");
+                return;
+            }
+            device_->setIntProperty(id, value);
+            Log::info("Orbbec", "Set " + name + "=" + std::to_string(value));
+        }
+        catch (const std::exception &e) {
+            Log::warn("Orbbec", "Failed to set " + name + ": " + e.what());
+        }
+    };
+
+    if (colorControl_.autoExposure) {
+        setBool(OB_PROP_COLOR_AUTO_EXPOSURE_BOOL, *colorControl_.autoExposure, "color_auto_exposure");
+    }
+    if (colorControl_.exposure) {
+        setInt(OB_PROP_COLOR_EXPOSURE_INT, *colorControl_.exposure, "color_exposure");
+    }
+    if (colorControl_.gain) {
+        setInt(OB_PROP_COLOR_GAIN_INT, *colorControl_.gain, "color_gain");
+    }
+    if (colorControl_.autoWhiteBalance) {
+        setBool(OB_PROP_COLOR_AUTO_WHITE_BALANCE_BOOL, *colorControl_.autoWhiteBalance, "color_auto_white_balance");
+    }
+    if (colorControl_.whiteBalance) {
+        setInt(OB_PROP_COLOR_WHITE_BALANCE_INT, *colorControl_.whiteBalance, "color_white_balance");
+    }
+    if (colorControl_.autoExposurePriority) {
+        setInt(OB_PROP_COLOR_AUTO_EXPOSURE_PRIORITY_INT, *colorControl_.autoExposurePriority, "color_auto_exposure_priority");
+    }
+    if (colorControl_.powerLineFrequency) {
+        setInt(OB_PROP_COLOR_POWER_LINE_FREQUENCY_INT, *colorControl_.powerLineFrequency, "color_power_line_frequency");
+    }
+
+    Log::info("Orbbec", "Color property snapshot after config: auto_exposure="
+             + std::to_string(readBoolPropertyOrDefault(OB_PROP_COLOR_AUTO_EXPOSURE_BOOL))
+             + " exposure=" + std::to_string(readIntPropertyOrDefault(OB_PROP_COLOR_EXPOSURE_INT))
+             + " gain=" + std::to_string(readIntPropertyOrDefault(OB_PROP_COLOR_GAIN_INT))
+             + " auto_wb=" + std::to_string(readBoolPropertyOrDefault(OB_PROP_COLOR_AUTO_WHITE_BALANCE_BOOL))
+             + " wb=" + std::to_string(readIntPropertyOrDefault(OB_PROP_COLOR_WHITE_BALANCE_INT))
+             + " ae_priority=" + std::to_string(readIntPropertyOrDefault(OB_PROP_COLOR_AUTO_EXPOSURE_PRIORITY_INT))
+             + " power_line_frequency=" + std::to_string(readIntPropertyOrDefault(OB_PROP_COLOR_POWER_LINE_FREQUENCY_INT)));
+}
+
+int32_t OrbbecProcessor::readIntPropertyOrDefault(OBPropertyID propertyId, int32_t defaultValue) const {
+    if (!device_) return defaultValue;
+    try {
+        if (device_->isPropertySupported(propertyId, OB_PERMISSION_READ) ||
+            device_->isPropertySupported(propertyId, OB_PERMISSION_READ_WRITE)) {
+            return device_->getIntProperty(propertyId);
+        }
+    }
+    catch (...) {
+    }
+    return defaultValue;
+}
+
+int32_t OrbbecProcessor::readBoolPropertyOrDefault(OBPropertyID propertyId, int32_t defaultValue) const {
+    if (!device_) return defaultValue;
+    try {
+        if (device_->isPropertySupported(propertyId, OB_PERMISSION_READ) ||
+            device_->isPropertySupported(propertyId, OB_PERMISSION_READ_WRITE)) {
+            return device_->getBoolProperty(propertyId) ? 1 : 0;
+        }
+    }
+    catch (...) {
+    }
+    return defaultValue;
 }
 
 // ============================================================================
@@ -239,6 +348,7 @@ void OrbbecProcessor::processingLoop() {
                 frame.colorData       = std::move(colorBuf);
                 frame.colorWidth      = cW;
                 frame.colorHeight     = cH;
+                frame.colorFormat     = colorFrame->format();
 
                 frame.depthData       = std::move(depthBuf);
                 frame.depthWidth      = dW;

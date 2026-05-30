@@ -9,10 +9,24 @@
 #include <vector>
 #include <deque>
 #include <cstring>
+#include <optional>
+#include <string>
 
 // OrbbecSDK
 #include "libobsensor/ObSensor.hpp"
 #include "libobsensor/hpp/Error.hpp"
+
+struct OrbbecColorControlConfig {
+    OBFormat colorFormat = OB_FORMAT_MJPG;
+    std::string colorFormatName = "MJPG";
+    std::optional<bool> autoExposure;
+    std::optional<int32_t> exposure;
+    std::optional<int32_t> gain;
+    std::optional<bool> autoWhiteBalance;
+    std::optional<int32_t> whiteBalance;
+    std::optional<int32_t> autoExposurePriority;
+    std::optional<int32_t> powerLineFrequency;
+};
 
 /**
  * @brief Struct to hold a single frame result from the Orbbec camera.
@@ -23,6 +37,7 @@ struct OrbbecFrameData {
     std::vector<uint8_t> colorData;
     uint32_t colorWidth  = 0;
     uint32_t colorHeight = 0;
+    OBFormat colorFormat = OB_FORMAT_UNKNOWN;
 
     // Depth image (uint16, row-major, unit: raw depth units)
     std::vector<uint16_t> depthData;
@@ -48,7 +63,7 @@ struct OrbbecFrameData {
  */
 class OrbbecProcessor {
 public:
-    OrbbecProcessor();
+    explicit OrbbecProcessor(const OrbbecColorControlConfig &colorControl = {});
     ~OrbbecProcessor();
 
     /// Start the processing thread.  Non-blocking.
@@ -74,6 +89,9 @@ public:
 private:
     /// The actual processing loop executed on the worker thread.
     void processingLoop();
+    void applyColorControl();
+    int32_t readIntPropertyOrDefault(OBPropertyID propertyId, int32_t defaultValue = -1) const;
+    int32_t readBoolPropertyOrDefault(OBPropertyID propertyId, int32_t defaultValue = -1) const;
 
     // ── OrbbecSDK objects ──────────────────────────────────────────────
     std::shared_ptr<ob::Pipeline>          pipeline_;
@@ -82,6 +100,7 @@ private:
     std::unique_ptr<ob::Align>             alignFilter_;
 
     bool hasColor_ = false;
+    OrbbecColorControlConfig colorControl_;
 
     // ── Color intrinsics (for FOV computation) ─────────────────────────
     struct Intrinsics {
