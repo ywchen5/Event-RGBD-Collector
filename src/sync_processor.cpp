@@ -109,82 +109,42 @@ void SyncProcessor::setCallback(PairCallback cb) {
 //  Strategy:
 //    1. Wait until both buffers have ≥ MIN_BOOTSTRAP_SAMPLES entries,
 //       which proves both devices are actively streaming.
-//    2. Align the common startup window by discarding old front samples
-//       only.  If one side already has newer surplus samples, keep them
-//       queued for future frames instead of throwing them away.
-//    3. Move the LAST entry in the common startup window to the front.
-//    4. Initialise deltaOrbToEvs_ from that pair.
-//    5. The first few pairs after this may still have a residual
+//    2. Flush all but the LAST entry on each side - the most recent
+//       data is the only data that can possibly be co-triggered.
+//    3. Initialise deltaOrbToEvs_ from that pair.
+//    4. The first few pairs after this may still have a residual
 //       offset, but the EMA drift-tracking (alpha=0.1) converges
 //       within ~10 frames.
 //
 bool SyncProcessor::bootstrapAlignment() {
-    size_t requiredEvsSamples = MIN_BOOTSTRAP_SAMPLES;
-    if (rgbEventVisualOffsetUs_ > 0) {
-        requiredEvsSamples += static_cast<size_t>(rgbEventVisualOffsetUs_ / FRAME_INTERVAL_US) + 2;
-    }
-
     if (orbBuf_.size() < MIN_BOOTSTRAP_SAMPLES ||
-        evsBuf_.size() < requiredEvsSamples) {
+        evsBuf_.size() < MIN_BOOTSTRAP_SAMPLES) {
         return false;   // not enough data yet — at least one side is still warming up
     }
 
-    const size_t orbInitialSize = orbBuf_.size();
-    const size_t evsInitialSize = evsBuf_.size();
-
     size_t orbDiscarded = 0;
-    size_t evsDiscarded = 0;
-    const size_t commonCount = std::min(orbBuf_.size(), evsBuf_.size());
-
-    const size_t visualOffsetFrames =
-        rgbEventVisualOffsetUs_ > 0
-            ? static_cast<size_t>((rgbEventVisualOffsetUs_ + FRAME_INTERVAL_US - 1) / FRAME_INTERVAL_US)
-            : 0;
-    const size_t evsBootstrapKeep = std::min(commonCount, visualOffsetFrames + 1);
-
-    // Move the common-window tail to the Orbbec front.  Any newer Orbbec
-    // samples after that tail remain queued for future event slices.
-    for (size_t i = 0; i + 1 < commonCount; ++i) {
+    while (orbBuf_.size() > 1) {
         orbBuf_.pop_front();
         orbDiscarded++;
         orbDropCount_++;
     }
 
-    // Keep enough earlier event slices for a positive visual offset, plus
-    // any newer event surplus after the common-window tail.  For example,
-    // with common tail E5 and --rgb-event-offset-frames 2, keep E3,E4,E5
-    // at the front and also retain E6,E7 if they already arrived.
-    const size_t evsFrontDiscard = commonCount - evsBootstrapKeep;
-    for (size_t i = 0; i < evsFrontDiscard; ++i) {
+    size_t evsDiscarded = 0;
+    while (evsBuf_.size() > 1) {
         evsBuf_.pop_front();
         evsDiscarded++;
         evsDropCount_++;
     }
 
-    // Initialise delta from the trigger-sequence-aligned event, not from
-    // an earlier visual-offset candidate at the front.
     int64_t orbTs = static_cast<int64_t>(orbBuf_.front().colorTimestampUs);
-    const size_t evsAnchorIdx = evsBootstrapKeep - 1;
-    int64_t evsTs = evsBuf_[evsAnchorIdx].startTs;
+    int64_t evsTs = evsBuf_.front().startTs;
     deltaOrbToEvs_ = evsTs - orbTs;
     initialDelta_  = deltaOrbToEvs_;
 
     {
         Log::LogBlock blk("Bootstrap Alignment");
-        blk.kv("Orb initial", orbInitialSize);
-        blk.kv("Evs initial", evsInitialSize);
-        blk.kv("Common count", commonCount);
         blk.kv("Orb discarded", orbDiscarded);
         blk.kv("Evs discarded", evsDiscarded);
-        blk.kv("Visual offset frames", visualOffsetFrames);
-        blk.kv("Evs kept", evsBuf_.size());
-        blk.kv("Orb selected frame", orbBuf_.front().colorFrameIndex);
-        blk.kv("Evs anchor seq", std::to_string(evsBuf_[evsAnchorIdx].triggerStartSeq)
-               + "->" + std::to_string(evsBuf_[evsAnchorIdx].triggerEndSeq));
-        blk.kv("Evs first kept seq", std::to_string(evsBuf_.front().triggerStartSeq)
-               + "->" + std::to_string(evsBuf_.front().triggerEndSeq));
-        blk.kv("Evs last kept seq", std::to_string(evsBuf_.back().triggerStartSeq)
-               + "->" + std::to_string(evsBuf_.back().triggerEndSeq));
         blk.kv("OrbTs", std::to_string(orbTs) + " us");
         blk.kv("EvsTs", std::to_string(evsTs) + " us");
         blk.kv("Delta (evs-orb)", std::to_string(deltaOrbToEvs_) + " us");
