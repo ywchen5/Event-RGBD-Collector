@@ -123,17 +123,8 @@ bool SyncProcessor::bootstrapAlignment() {
         const auto orbFront = orbBuf_.front();
         const auto evsFront = evsBuf_.front();
 
-        const size_t orbDiscarded = orbInitial > 0 ? orbInitial - 1 : 0;
-        const size_t evsDiscarded = evsInitial > 0 ? evsInitial - 1 : 0;
-
-        while (orbBuf_.size() > 1) {
-            orbBuf_.pop_front();
-            orbDropCount_++;
-        }
-        while (evsBuf_.size() > 1) {
-            evsBuf_.pop_front();
-            evsDropCount_++;
-        }
+        const size_t orbDiscarded = 0;
+        const size_t evsDiscarded = 0;
 
         int64_t orbTs = static_cast<int64_t>(orbBuf_.front().colorTimestampUs);
         int64_t evsTs = evsBuf_.front().startTs;
@@ -141,7 +132,7 @@ bool SyncProcessor::bootstrapAlignment() {
         initialDelta_  = deltaOrbToEvs_;
 
         Log::LogBlock blk("Bootstrap Alignment");
-        blk.kv("Mode", "latest-after-min-samples");
+        blk.kv("Mode", "first-frame-no-discard");
         blk.kv("Min samples", MIN_BOOTSTRAP_SAMPLES);
         blk.kv("Orb initial", orbInitial);
         blk.kv("Evs initial", evsInitial);
