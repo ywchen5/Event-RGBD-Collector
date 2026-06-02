@@ -204,7 +204,12 @@ void PropheseeProcessor::processingLoop() {
                     continue;  // skip this trigger
                 }
 
-                trigAccepted_++;
+                const uint64_t acceptedSeq = trigAccepted_.fetch_add(1) + 1;
+                if (acceptedSeq <= 12) {
+                    Log::info("Prophesee", "Trigger accepted #" + std::to_string(acceptedSeq)
+                              + " ts=" + std::to_string(currentTrigTs) + " us"
+                              + " active=" + std::to_string(triggerActive_ ? 1 : 0));
+                }
                 // @code-review: here the triggerActive_ design indicates that
                 //    the trigger can only be activated once, so do not test the case where
                 //    the trigger is deactivated and then reactivated for now.
@@ -245,11 +250,18 @@ void PropheseeProcessor::processingLoop() {
 
                     // Publish slice
                     if (!sliceEvents.empty()) {
+                        const size_t sliceEventCount = sliceEvents.size();
                         EventSliceData slice;
                         slice.events  = std::move(sliceEvents);
                         slice.startTs = lastTriggerTs_;
                         slice.endTs   = currentTrigTs;
+                        slice.triggerStartSeq = acceptedSeq - 1;
+                        slice.triggerEndSeq = acceptedSeq;
                         slice.valid   = true;
+                        const int64_t sliceStartTs = slice.startTs;
+                        const int64_t sliceEndTs = slice.endTs;
+                        const uint64_t sliceSeq = slicesProduced_.fetch_add(1) + 1;
+                        slice.sliceSeq = sliceSeq;
 
                         {
                             std::lock_guard<std::mutex> lock(sliceMutex_);
@@ -258,6 +270,24 @@ void PropheseeProcessor::processingLoop() {
                             }
                             sliceQueue_.push_back(std::move(slice));
                             newSliceReady_.store(true);
+                        }
+                        if (sliceSeq <= 12) {
+                            Log::info("Prophesee", "Slice produced #" + std::to_string(sliceSeq)
+                                      + " trigger_seq=" + std::to_string(acceptedSeq - 1)
+                                      + "->" + std::to_string(acceptedSeq)
+                                      + " start=" + std::to_string(sliceStartTs)
+                                      + " end=" + std::to_string(sliceEndTs)
+                                      + " dt=" + std::to_string(sliceEndTs - sliceStartTs)
+                                      + " us events=" + std::to_string(sliceEventCount));
+                        }
+                    } else {
+                        if (acceptedSeq <= 12) {
+                            Log::info("Prophesee", "Empty slice skipped trigger_seq="
+                                      + std::to_string(acceptedSeq - 1)
+                                      + "->" + std::to_string(acceptedSeq)
+                                      + " start=" + std::to_string(lastTriggerTs_)
+                                      + " end=" + std::to_string(currentTrigTs)
+                                      + " dt=" + std::to_string(currentTrigTs - lastTriggerTs_) + " us");
                         }
                     }
 

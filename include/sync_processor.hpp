@@ -126,7 +126,7 @@ private:
     //    from both sides, then find the first real match.  This handles
     //    the case where one device starts much earlier than the other.
     bool     aligned_               = false;
-    static constexpr size_t MIN_BOOTSTRAP_SAMPLES = 1;  // diagnostic: keep startup frames
+    static constexpr size_t MIN_BOOTSTRAP_SAMPLES = 5;
 
     // ── Internal FIFO buffers ──────────────────────────────────────────
     //    Drain the per-sensor front-buffers into these deques so that
@@ -177,6 +177,7 @@ private:
     uint64_t totalPairCount_ = 0;   // never reset
     uint64_t orbDropCount_   = 0;
     uint64_t evsDropCount_   = 0;
+    uint64_t orbEnqueueLogCount_ = 0;
     std::vector<int64_t> diffSamples_;  // for periodic average / max
     std::chrono::steady_clock::time_point startTime_;
 };

@@ -37,6 +37,9 @@ struct EventSliceData {
     std::vector<CdEvent> events;
     int64_t startTs = 0;   // µs – timestamp of the slice-start trigger
     int64_t endTs   = 0;   // µs – timestamp of the slice-end trigger
+    uint64_t triggerStartSeq = 0;
+    uint64_t triggerEndSeq = 0;
+    uint64_t sliceSeq = 0;
     bool valid      = false;
 };
 
@@ -153,8 +156,10 @@ private:
     static constexpr int64_t MIN_TRIGGER_INTERVAL_US = 20000;  // 20 ms (~50 Hz max)
     std::atomic<uint64_t> trigAccepted_{0};
     std::atomic<uint64_t> trigRejected_{0};
+    std::atomic<uint64_t> slicesProduced_{0};
 public:
     uint64_t trigAccepted() const { return trigAccepted_.load(); }
     uint64_t trigRejected() const { return trigRejected_.load(); }
+    uint64_t slicesProduced() const { return slicesProduced_.load(); }
 private:
 };

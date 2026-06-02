@@ -33,6 +33,13 @@ struct OrbbecFrameData {
     uint64_t colorTimestampUs = 0;
     uint64_t depthTimestampUs = 0;
 
+    // SDK frame indices from aligned frames and raw frames before alignment.
+    uint64_t colorFrameIndex = 0;
+    uint64_t depthFrameIndex = 0;
+    uint64_t rawColorFrameIndex = 0;
+    uint64_t rawDepthFrameIndex = 0;
+    uint64_t producedSeq = 0;
+
     bool valid = false;
 };
 

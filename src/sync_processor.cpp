@@ -116,6 +116,67 @@ bool SyncProcessor::bootstrapAlignment() {
         return false;   // not enough data yet — at least one side is still warming up
     }
 
+    {
+        const size_t orbInitial = orbBuf_.size();
+        const size_t evsInitial = evsBuf_.size();
+
+        const auto orbFront = orbBuf_.front();
+        const auto evsFront = evsBuf_.front();
+
+        const size_t orbDiscarded = orbInitial > 0 ? orbInitial - 1 : 0;
+        const size_t evsDiscarded = evsInitial > 0 ? evsInitial - 1 : 0;
+
+        while (orbBuf_.size() > 1) {
+            orbBuf_.pop_front();
+            orbDropCount_++;
+        }
+        while (evsBuf_.size() > 1) {
+            evsBuf_.pop_front();
+            evsDropCount_++;
+        }
+
+        int64_t orbTs = static_cast<int64_t>(orbBuf_.front().colorTimestampUs);
+        int64_t evsTs = evsBuf_.front().startTs;
+        deltaOrbToEvs_ = evsTs - orbTs;
+        initialDelta_  = deltaOrbToEvs_;
+
+        Log::LogBlock blk("Bootstrap Alignment");
+        blk.kv("Mode", "latest-after-min-samples");
+        blk.kv("Min samples", MIN_BOOTSTRAP_SAMPLES);
+        blk.kv("Orb initial", orbInitial);
+        blk.kv("Evs initial", evsInitial);
+        blk.kv("Producer Orb frames", orbbec_.producedFrameCount());
+        blk.kv("Producer Evs triggers", prophesee_.trigAccepted());
+        blk.kv("Producer Evs slices", prophesee_.slicesProduced());
+        blk.kv("Orb discarded", orbDiscarded);
+        blk.kv("Evs discarded", evsDiscarded);
+        blk.kv("Orb front", "seq=" + std::to_string(orbFront.producedSeq)
+               + " color_idx=" + std::to_string(orbFront.colorFrameIndex)
+               + " ts=" + std::to_string(orbFront.colorTimestampUs) + " us");
+        blk.kv("Orb selected", "seq=" + std::to_string(orbBuf_.front().producedSeq)
+               + " color_idx=" + std::to_string(orbBuf_.front().colorFrameIndex)
+               + " ts=" + std::to_string(orbBuf_.front().colorTimestampUs) + " us");
+        blk.kv("Evs front", "slice=" + std::to_string(evsFront.sliceSeq)
+               + " trig=" + std::to_string(evsFront.triggerStartSeq)
+               + "->" + std::to_string(evsFront.triggerEndSeq)
+               + " ts=" + std::to_string(evsFront.startTs)
+               + "->" + std::to_string(evsFront.endTs) + " us");
+        blk.kv("Evs selected", "slice=" + std::to_string(evsBuf_.front().sliceSeq)
+               + " trig=" + std::to_string(evsBuf_.front().triggerStartSeq)
+               + "->" + std::to_string(evsBuf_.front().triggerEndSeq)
+               + " ts=" + std::to_string(evsBuf_.front().startTs)
+               + "->" + std::to_string(evsBuf_.front().endTs) + " us");
+        blk.kv("Seq delta evs-orb", static_cast<int64_t>(evsBuf_.front().sliceSeq)
+               - static_cast<int64_t>(orbBuf_.front().producedSeq));
+        blk.kv("OrbTs", std::to_string(orbTs) + " us");
+        blk.kv("EvsTs", std::to_string(evsTs) + " us");
+        blk.kv("Delta (evs-orb)", std::to_string(deltaOrbToEvs_) + " us");
+        Log::banner(blk.title(), blk.body());
+
+        aligned_ = true;
+        return true;
+    }
+
     // Diagnostic branch: do not discard startup samples. This lets the
     // saved 000000/000001/000002 pairs show the first samples delivered
     // by each producer instead of the post-bootstrap newest samples.
@@ -161,11 +222,55 @@ void SyncProcessor::syncLoop() {
             OrbbecFrameData tmp;
             while (orbbec_.popFrame(tmp)) {
                 if (tmp.valid) {
+                    const uint64_t orbProducedSeq = tmp.producedSeq;
+                    const uint64_t colorFrameIndex = tmp.colorFrameIndex;
+                    const uint64_t depthFrameIndex = tmp.depthFrameIndex;
+                    const uint64_t rawColorFrameIndex = tmp.rawColorFrameIndex;
+                    const uint64_t rawDepthFrameIndex = tmp.rawDepthFrameIndex;
+                    const uint64_t colorTimestampUs = tmp.colorTimestampUs;
+                    const uint64_t latestEventTriggers = prophesee_.trigAccepted();
+                    const uint64_t latestEventSlices = prophesee_.slicesProduced();
+                    const size_t orbBufBefore = orbBuf_.size();
+                    const size_t evsBufBefore = evsBuf_.size();
+                    uint64_t syncLatestSliceSeq = 0;
+                    uint64_t syncLatestTriggerStartSeq = 0;
+                    uint64_t syncLatestTriggerEndSeq = 0;
+                    int64_t syncLatestEventStartTs = 0;
+                    int64_t syncLatestEventEndTs = 0;
+                    if (!evsBuf_.empty()) {
+                        const auto& latest = evsBuf_.back();
+                        syncLatestSliceSeq = latest.sliceSeq;
+                        syncLatestTriggerStartSeq = latest.triggerStartSeq;
+                        syncLatestTriggerEndSeq = latest.triggerEndSeq;
+                        syncLatestEventStartTs = latest.startTs;
+                        syncLatestEventEndTs = latest.endTs;
+                    }
+
                     if (orbBuf_.size() >= MAX_BUFFER) {
                         orbBuf_.pop_front();
                         orbDropCount_++;
                     }
                     orbBuf_.push_back(std::move(tmp));
+                    if (orbEnqueueLogCount_ < 24) {
+                        ++orbEnqueueLogCount_;
+                        Log::info("Sync", "Orb enqueue #" + std::to_string(orbEnqueueLogCount_)
+                                  + " orb_produced_seq=" + std::to_string(orbProducedSeq)
+                                  + " color_idx=" + std::to_string(colorFrameIndex)
+                                  + " depth_idx=" + std::to_string(depthFrameIndex)
+                                  + " raw_color_idx=" + std::to_string(rawColorFrameIndex)
+                                  + " raw_depth_idx=" + std::to_string(rawDepthFrameIndex)
+                                  + " color_ts=" + std::to_string(colorTimestampUs)
+                                  + " orb_buf_before=" + std::to_string(orbBufBefore)
+                                  + " orb_buf_after=" + std::to_string(orbBuf_.size())
+                                  + " producer_event_triggers=" + std::to_string(latestEventTriggers)
+                                  + " producer_event_slices=" + std::to_string(latestEventSlices)
+                                  + " sync_evs_buf_before_event_drain=" + std::to_string(evsBufBefore)
+                                  + " sync_latest_slice_seq=" + std::to_string(syncLatestSliceSeq)
+                                  + " sync_latest_trigger_seq=" + std::to_string(syncLatestTriggerStartSeq)
+                                  + "->" + std::to_string(syncLatestTriggerEndSeq)
+                                  + " sync_latest_event_ts=" + std::to_string(syncLatestEventStartTs)
+                                  + "->" + std::to_string(syncLatestEventEndTs));
+                    }
                     hasData = true;
                 }
             }
@@ -268,6 +373,23 @@ void SyncProcessor::syncLoop() {
             pair.mappedColorTimestampUs = static_cast<int64_t>(pair.orbbec.colorTimestampUs) + pairDeltaOrbToEvs;
             pair.mappedDepthTimestampUs = static_cast<int64_t>(pair.orbbec.depthTimestampUs) + pairDeltaOrbToEvs;
             pair.valid       = true;
+
+            if (pair.seqNum < 12) {
+                Log::info("Sync", "Pair produced #" + std::to_string(pair.seqNum)
+                          + " color_idx=" + std::to_string(pair.orbbec.colorFrameIndex)
+                          + " depth_idx=" + std::to_string(pair.orbbec.depthFrameIndex)
+                          + " raw_color_idx=" + std::to_string(pair.orbbec.rawColorFrameIndex)
+                          + " raw_depth_idx=" + std::to_string(pair.orbbec.rawDepthFrameIndex)
+                          + " color_ts=" + std::to_string(pair.orbbec.colorTimestampUs)
+                          + " mapped_color_ts=" + std::to_string(pair.mappedColorTimestampUs)
+                          + " event_trigger_seq=" + std::to_string(pair.events.triggerStartSeq)
+                          + "->" + std::to_string(pair.events.triggerEndSeq)
+                          + " event_start=" + std::to_string(pair.events.startTs)
+                          + " event_end=" + std::to_string(pair.events.endTs)
+                          + " events=" + std::to_string(pair.events.events.size())
+                          + " best_idx=" + std::to_string(bestIdx)
+                          + " clock_diff=" + std::to_string(clockDiff) + " us");
+            }
 
             pairCount_++;
             totalPairCount_++;

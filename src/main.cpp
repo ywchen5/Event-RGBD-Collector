@@ -76,6 +76,7 @@ static std::string getPositional(int argc, char *argv[]) {
         if (std::strcmp(argv[i], "--output") == 0 ||
             std::strcmp(argv[i], "-o") == 0 ||
             std::strcmp(argv[i], "--max-synced-pairs") == 0 ||
+            std::strcmp(argv[i], "--stop-after-triggers") == 0 ||
             std::strcmp(argv[i], "--rgb-event-offset-us") == 0 ||
             std::strcmp(argv[i], "--rgb-event-offset-frames") == 0 ||
             std::strcmp(argv[i], "--color-format") == 0 ||
@@ -247,6 +248,7 @@ int main(int argc, char *argv[]) {
     std::string outputRoot = getFlagValue(argc, argv, "--output",
                              getFlagValue(argc, argv, "-o", "./output"));
     int64_t maxSyncedPairs = getInt64FlagValue(argc, argv, "--max-synced-pairs", 6);
+    int64_t stopAfterTriggers = getInt64FlagValue(argc, argv, "--stop-after-triggers", 0);
     std::string rawFile = getPositional(argc, argv);
 
     if (storeEnabled) {
@@ -258,6 +260,10 @@ int main(int argc, char *argv[]) {
     if (maxSyncedPairs > 0) {
         Log::info("Main", "Diagnostic capture limit: "
                   + std::to_string(maxSyncedPairs) + " synced pairs.");
+    }
+    if (stopAfterTriggers > 0) {
+        Log::info("Main", "Diagnostic trigger limit: "
+                  + std::to_string(stopAfterTriggers) + " accepted event triggers.");
     }
 
     // ════════════════════════════════════════════════════════════════════
@@ -351,6 +357,23 @@ int main(int argc, char *argv[]) {
     while (!g_stop.load()) {
         // If the event camera was opened and has stopped, exit the loop
         if (hasEventCam && !prophesee->isRunning()) break;
+
+        if (hasEventCam && stopAfterTriggers > 0 &&
+            prophesee->trigAccepted() >= static_cast<uint64_t>(stopAfterTriggers)) {
+            Log::info("Main", "Reached diagnostic trigger limit: "
+                      + std::to_string(prophesee->trigAccepted()) + " accepted event triggers.");
+            Log::info("Main", "Producer counts at trigger limit: OrbbecFrames="
+                      + std::to_string(orbbec->producedFrameCount())
+                      + "  OrbbecQueue=" + std::to_string(orbbec->queueSize())
+                      + "  EventTrigAccepted=" + std::to_string(prophesee->trigAccepted())
+                      + "  EventTrigRejected=" + std::to_string(prophesee->trigRejected())
+                      + "  EventSlicesProduced=" + std::to_string(prophesee->slicesProduced())
+                      + "  EventSliceQueue=" + std::to_string(prophesee->sliceQueueSize())
+                      + "  SyncedPairsConsumed=" + std::to_string(pairCount)
+                      + (sync ? "  SyncPairQueue=" + std::to_string(sync->pairQueueSize()) : ""));
+            g_stop.store(true);
+            break;
+        }
 
         bool gotFrame = false;   // track whether we got new data this iteration
 

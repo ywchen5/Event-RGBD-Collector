@@ -265,16 +265,34 @@ void OrbbecProcessor::processingLoop() {
 
                 frame.colorTimestampUs = oColorTs;
                 frame.depthTimestampUs = oDepthTs;
+                frame.colorFrameIndex = colorFrame->index();
+                frame.depthFrameIndex = depthFrame->index();
+                frame.rawColorFrameIndex = rawColor->index();
+                frame.rawDepthFrameIndex = rawDepth->index();
 
                 frame.valid = true;
+
+                const uint64_t producedSeq = producedFrameCount_.fetch_add(1) + 1;
+                frame.producedSeq = producedSeq;
 
                 std::lock_guard<std::mutex> lock(frameMutex_);
                 if (frameQueue_.size() >= MAX_QUEUE) {
                     frameQueue_.pop_front();  // drop oldest
                 }
                 frameQueue_.push_back(std::move(frame));
-                producedFrameCount_.fetch_add(1);
                 newFrameReady_.store(true);
+                if (producedSeq <= 12) {
+                    Log::info("Orbbec", "Frame produced #" + std::to_string(producedSeq)
+                              + " color_idx=" + std::to_string(colorFrame->index())
+                              + " depth_idx=" + std::to_string(depthFrame->index())
+                              + " raw_color_idx=" + std::to_string(rawColor->index())
+                              + " raw_depth_idx=" + std::to_string(rawDepth->index())
+                              + " color_ts=" + std::to_string(oColorTs)
+                              + " depth_ts=" + std::to_string(oDepthTs)
+                              + " color_sys_ts=" + std::to_string(colorFrame->systemTimeStampUs())
+                              + " depth_sys_ts=" + std::to_string(depthFrame->systemTimeStampUs())
+                              + " queue=" + std::to_string(frameQueue_.size()));
+                }
             }
 
             // ── FPS measurement ────────────────────────────────────────
