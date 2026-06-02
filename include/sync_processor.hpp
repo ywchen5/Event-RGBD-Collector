@@ -35,6 +35,15 @@ struct SyncedPair {
     //   = events.startTs − (orbbec.colorTimestampUs + deltaOrbToEvs)
     int64_t          clockDiffUs = 0;
 
+    // Orbbec timestamps mapped into the event-camera timestamp domain using
+    // the sync processor's current deltaOrbToEvs estimate.
+    int64_t          mappedColorTimestampUs = 0;
+    int64_t          mappedDepthTimestampUs = 0;
+    int64_t          deltaOrbToEvsUs = 0;
+    int64_t          rgbEventVisualOffsetUs = 0;
+    int64_t          visualMappedColorTimestampUs = 0;
+    int64_t          visualClockDiffUs = 0;
+
     bool valid = false;
 };
 
@@ -75,7 +84,8 @@ public:
      * @param orbbec     Reference to a running OrbbecProcessor.
      * @param prophesee  Reference to a running PropheseeProcessor.
      */
-    SyncProcessor(OrbbecProcessor &orbbec, PropheseeProcessor &prophesee);
+    SyncProcessor(OrbbecProcessor &orbbec, PropheseeProcessor &prophesee,
+                  int64_t rgbEventVisualOffsetUs = 0);
     ~SyncProcessor();
 
     /// Start the sync thread.  Non-blocking.
@@ -87,6 +97,13 @@ public:
     /// Thread-safe: copy the latest synchronised pair.
     /// @return true if a new pair was available since the last call.
     bool getLatestPair(SyncedPair &out);
+
+    /// Thread-safe: pop the oldest queued synchronised pair. Used by recorder.
+    /// @return true if a pair was available.
+    bool popPair(SyncedPair &out);
+
+    /// Number of queued pairs waiting for the recorder/main thread.
+    size_t pairQueueSize() const;
 
     /// Check running state.
     bool isRunning() const { return running_.load(); }
@@ -113,7 +130,7 @@ private:
     //    from both sides, then find the first real match.  This handles
     //    the case where one device starts much earlier than the other.
     bool     aligned_               = false;
-    static constexpr size_t MIN_BOOTSTRAP_SAMPLES = 5;  // need ≥5 on each side
+    static constexpr size_t MIN_BOOTSTRAP_SAMPLES = 5;  // need >=5 on each side
 
     // ── Internal FIFO buffers ──────────────────────────────────────────
     //    Drain the per-sensor front-buffers into these deques so that
@@ -129,6 +146,7 @@ private:
     //    maintained every pair via EMA so clockDiff stays near zero.
     int64_t  deltaOrbToEvs_      = 0;     // µs
     int64_t  initialDelta_       = 0;
+    int64_t  rgbEventVisualOffsetUs_ = 0;
     static constexpr double DRIFT_ALPHA = 0.1;
 
     // ── Nearest-timestamp pairing ───────────────────────────────────────
@@ -144,6 +162,11 @@ private:
     SyncedPair        pairFront_;
     std::mutex        pairMutex_;
     std::atomic<bool> newPairReady_{false};
+
+    static constexpr size_t MAX_PAIR_QUEUE = 300; // ~10 s @ 30 fps
+    std::deque<SyncedPair>  pairQueue_;
+    mutable std::mutex      pairQueueMutex_;
+    std::atomic<uint64_t>   pairQueueDropCount_{0};
 
     // ── Optional user callback ─────────────────────────────────────────
     PairCallback      callback_;

@@ -37,6 +37,8 @@ struct EventSliceData {
     std::vector<CdEvent> events;
     int64_t startTs = 0;   // µs – timestamp of the slice-start trigger
     int64_t endTs   = 0;   // µs – timestamp of the slice-end trigger
+    uint64_t triggerStartSeq = 0;
+    uint64_t triggerEndSeq = 0;
     bool valid      = false;
 };
 
@@ -144,6 +146,7 @@ private:
     // ── Trigger-slicing state (owned by the worker thread – no mutex) ──
     std::vector<CdEvent> eventBuffer_;
     int64_t              lastTriggerTs_ = 0;
+    uint64_t             lastTriggerSeq_ = 0;
     bool                 triggerActive_ = false;
 
     // ── Trigger diagnostics ────────────────────────────────────────────

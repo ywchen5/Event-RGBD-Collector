@@ -11,6 +11,7 @@
 // OpenCV for image writing
 #include <opencv2/imgcodecs.hpp>
 #include <opencv2/core.hpp>
+#include <opencv2/imgproc.hpp>
 
 // HDF5 C++ API
 #include <H5Cpp.h>
@@ -18,6 +19,63 @@
 
 // HDF5 is NOT thread-safe by default.  All HDF5 calls must be serialised.
 static std::mutex g_hdf5Mutex;
+
+namespace {
+
+void writeInt64Attr(H5::H5File &file,
+                    const H5::DataType &attrType,
+                    const H5::DataSpace &attrSpace,
+                    const std::string &name,
+                    int64_t value) {
+    H5::Attribute attr = file.createAttribute(name, attrType, attrSpace);
+    attr.write(attrType, &value);
+}
+
+void writeStringAttr(H5::H5File &file,
+                     const H5::DataSpace &attrSpace,
+                     const std::string &name,
+                     const std::string &value) {
+    H5::StrType attrType(H5::PredType::C_S1, H5T_VARIABLE);
+    H5::Attribute attr = file.createAttribute(name, attrType, attrSpace);
+    const char *cValue = value.c_str();
+    attr.write(attrType, &cValue);
+}
+
+void appendMetadataHeader(std::ostream &os, const std::string &prefix) {
+    os << prefix << "_metadata_size,"
+       << prefix << "_metadata_hex,";
+    os << prefix << "_meta_timestamp,"
+       << prefix << "_meta_sensor_timestamp,"
+       << prefix << "_meta_frame_number,"
+       << prefix << "_meta_auto_exposure,"
+       << prefix << "_meta_exposure,"
+       << prefix << "_meta_gain,"
+       << prefix << "_meta_actual_frame_rate,"
+       << prefix << "_meta_frame_rate,"
+       << prefix << "_meta_gpio_input_data,";
+    for (uint32_t i = 0; i < static_cast<uint32_t>(OB_FRAME_METADATA_TYPE_COUNT); ++i) {
+        os << prefix << "_meta_type_" << i << ",";
+    }
+}
+
+void appendMetadataRow(std::ostream &os, const OrbbecMetadataSnapshot &meta) {
+    os << meta.metadataSize << ","
+       << meta.metadataHex << ","
+       << meta.timestamp << ","
+       << meta.sensorTimestamp << ","
+       << meta.frameNumber << ","
+       << meta.autoExposure << ","
+       << meta.exposure << ","
+       << meta.gain << ","
+       << meta.actualFrameRate << ","
+       << meta.frameRate << ","
+       << meta.gpioInputData << ",";
+    for (int64_t value : meta.values) {
+        os << value << ",";
+    }
+}
+
+} // namespace
 
 // ============================================================================
 //  Construction / Destruction
@@ -153,6 +211,18 @@ void DataRecorder::enqueue(const SyncedPair &pair) {
     task.idx    = recordIdx_.fetch_add(1);
     task.orbbec = pair.orbbec;      // copy
     task.events = pair.events;      // copy
+    task.eventStartTs = pair.events.startTs;
+    task.eventEndTs = pair.events.endTs;
+    task.eventTriggerStartSeq = pair.events.triggerStartSeq;
+    task.eventTriggerEndSeq = pair.events.triggerEndSeq;
+    task.seqNum = pair.seqNum;
+    task.clockDiffUs = pair.clockDiffUs;
+    task.deltaOrbToEvsUs = pair.deltaOrbToEvsUs;
+    task.mappedColorTimestampUs = pair.mappedColorTimestampUs;
+    task.mappedDepthTimestampUs = pair.mappedDepthTimestampUs;
+    task.rgbEventVisualOffsetUs = pair.rgbEventVisualOffsetUs;
+    task.visualMappedColorTimestampUs = pair.visualMappedColorTimestampUs;
+    task.visualClockDiffUs = pair.visualClockDiffUs;
 
     // ── Push to HDF5 queue ──────────────────────────────────────────────
     {
@@ -171,9 +241,18 @@ void DataRecorder::enqueue(const SyncedPair &pair) {
         WriteTask imgTask;
         imgTask.idx    = task.idx;
         imgTask.orbbec = std::move(task.orbbec);
-        // carry event slice timestamps for images metadata
-        imgTask.evStartTs = task.events.startTs;
-        imgTask.evEndTs   = task.events.endTs;
+        imgTask.eventStartTs = task.eventStartTs;
+        imgTask.eventEndTs = task.eventEndTs;
+        imgTask.eventTriggerStartSeq = task.eventTriggerStartSeq;
+        imgTask.eventTriggerEndSeq = task.eventTriggerEndSeq;
+        imgTask.seqNum = task.seqNum;
+        imgTask.clockDiffUs = task.clockDiffUs;
+        imgTask.deltaOrbToEvsUs = task.deltaOrbToEvsUs;
+        imgTask.mappedColorTimestampUs = task.mappedColorTimestampUs;
+        imgTask.mappedDepthTimestampUs = task.mappedDepthTimestampUs;
+        imgTask.rgbEventVisualOffsetUs = task.rgbEventVisualOffsetUs;
+        imgTask.visualMappedColorTimestampUs = task.visualMappedColorTimestampUs;
+        imgTask.visualClockDiffUs = task.visualClockDiffUs;
         // imgTask.events left empty – not needed for images
 
         std::lock_guard<std::mutex> lk(imageQueueMutex_);
@@ -311,12 +390,133 @@ void DataRecorder::writeEventHdf5(const WriteTask &task) {
 
             int64_t startTs = task.events.startTs;
             int64_t endTs   = task.events.endTs;
+            int64_t triggerStartSeq = static_cast<int64_t>(task.events.triggerStartSeq);
+            int64_t triggerEndSeq = static_cast<int64_t>(task.events.triggerEndSeq);
 
             H5::Attribute a1 = file.createAttribute("start_ts", attrType, attrSpace);
             a1.write(attrType, &startTs);
 
             H5::Attribute a2 = file.createAttribute("end_ts", attrType, attrSpace);
             a2.write(attrType, &endTs);
+
+            H5::Attribute aTrigStart = file.createAttribute("trigger_start_seq", attrType, attrSpace);
+            aTrigStart.write(attrType, &triggerStartSeq);
+
+            H5::Attribute aTrigEnd = file.createAttribute("trigger_end_seq", attrType, attrSpace);
+            aTrigEnd.write(attrType, &triggerEndSeq);
+
+            int64_t visualOffsetUs = task.rgbEventVisualOffsetUs;
+            int64_t visualMappedColorTs = task.visualMappedColorTimestampUs;
+
+            H5::Attribute a3 = file.createAttribute("rgb_event_visual_offset_us", attrType, attrSpace);
+            a3.write(attrType, &visualOffsetUs);
+
+            H5::Attribute a4 = file.createAttribute("rgb_visual_mapped_event_ts_us", attrType, attrSpace);
+            a4.write(attrType, &visualMappedColorTs);
+
+            int64_t colorFrameIndex = static_cast<int64_t>(task.orbbec.colorFrameIndex);
+            int64_t depthFrameIndex = static_cast<int64_t>(task.orbbec.depthFrameIndex);
+            int64_t rawColorFrameIndex = static_cast<int64_t>(task.orbbec.rawColorFrameIndex);
+            int64_t rawDepthFrameIndex = static_cast<int64_t>(task.orbbec.rawDepthFrameIndex);
+
+            H5::Attribute a5 = file.createAttribute("orbbec_color_frame_index", attrType, attrSpace);
+            a5.write(attrType, &colorFrameIndex);
+
+            H5::Attribute a6 = file.createAttribute("orbbec_depth_frame_index", attrType, attrSpace);
+            a6.write(attrType, &depthFrameIndex);
+
+            H5::Attribute a7 = file.createAttribute("orbbec_raw_color_frame_index", attrType, attrSpace);
+            a7.write(attrType, &rawColorFrameIndex);
+
+            H5::Attribute a8 = file.createAttribute("orbbec_raw_depth_frame_index", attrType, attrSpace);
+            a8.write(attrType, &rawDepthFrameIndex);
+
+            writeInt64Attr(file, attrType, attrSpace, "orbbec_color_global_ts_us",
+                           static_cast<int64_t>(task.orbbec.colorGlobalTimestampUs));
+            writeInt64Attr(file, attrType, attrSpace, "orbbec_depth_global_ts_us",
+                           static_cast<int64_t>(task.orbbec.depthGlobalTimestampUs));
+            writeInt64Attr(file, attrType, attrSpace, "orbbec_raw_color_global_ts_us",
+                           static_cast<int64_t>(task.orbbec.rawColorGlobalTimestampUs));
+            writeInt64Attr(file, attrType, attrSpace, "orbbec_raw_depth_global_ts_us",
+                           static_cast<int64_t>(task.orbbec.rawDepthGlobalTimestampUs));
+            writeInt64Attr(file, attrType, attrSpace, "orbbec_color_format",
+                           static_cast<int64_t>(task.orbbec.colorFormat));
+            writeInt64Attr(file, attrType, attrSpace, "orbbec_color_prop_auto_exposure",
+                           task.orbbec.colorAutoExposure);
+            writeInt64Attr(file, attrType, attrSpace, "orbbec_color_prop_exposure",
+                           task.orbbec.colorExposure);
+            writeInt64Attr(file, attrType, attrSpace, "orbbec_color_prop_gain",
+                           task.orbbec.colorGain);
+            writeInt64Attr(file, attrType, attrSpace, "orbbec_color_prop_auto_white_balance",
+                           task.orbbec.colorAutoWhiteBalance);
+            writeInt64Attr(file, attrType, attrSpace, "orbbec_color_prop_white_balance",
+                           task.orbbec.colorWhiteBalance);
+            writeInt64Attr(file, attrType, attrSpace, "orbbec_color_prop_auto_exposure_priority",
+                           task.orbbec.colorAutoExposurePriority);
+            writeInt64Attr(file, attrType, attrSpace, "orbbec_color_prop_power_line_frequency",
+                           task.orbbec.colorPowerLineFrequency);
+
+            writeInt64Attr(file, attrType, attrSpace, "orbbec_color_metadata_size",
+                           static_cast<int64_t>(task.orbbec.colorMetadata.metadataSize));
+            writeInt64Attr(file, attrType, attrSpace, "orbbec_depth_metadata_size",
+                           static_cast<int64_t>(task.orbbec.depthMetadata.metadataSize));
+            writeInt64Attr(file, attrType, attrSpace, "orbbec_raw_color_metadata_size",
+                           static_cast<int64_t>(task.orbbec.rawColorMetadata.metadataSize));
+            writeInt64Attr(file, attrType, attrSpace, "orbbec_raw_depth_metadata_size",
+                           static_cast<int64_t>(task.orbbec.rawDepthMetadata.metadataSize));
+
+            writeStringAttr(file, attrSpace, "orbbec_color_metadata_hex",
+                            task.orbbec.colorMetadata.metadataHex);
+            writeStringAttr(file, attrSpace, "orbbec_depth_metadata_hex",
+                            task.orbbec.depthMetadata.metadataHex);
+            writeStringAttr(file, attrSpace, "orbbec_raw_color_metadata_hex",
+                            task.orbbec.rawColorMetadata.metadataHex);
+            writeStringAttr(file, attrSpace, "orbbec_raw_depth_metadata_hex",
+                            task.orbbec.rawDepthMetadata.metadataHex);
+
+            writeInt64Attr(file, attrType, attrSpace, "orbbec_color_meta_timestamp",
+                           task.orbbec.colorMetadata.timestamp);
+            writeInt64Attr(file, attrType, attrSpace, "orbbec_color_meta_sensor_timestamp",
+                           task.orbbec.colorMetadata.sensorTimestamp);
+            writeInt64Attr(file, attrType, attrSpace, "orbbec_color_meta_frame_number",
+                           task.orbbec.colorMetadata.frameNumber);
+            writeInt64Attr(file, attrType, attrSpace, "orbbec_color_meta_exposure",
+                           task.orbbec.colorMetadata.exposure);
+            writeInt64Attr(file, attrType, attrSpace, "orbbec_color_meta_gpio_input_data",
+                           task.orbbec.colorMetadata.gpioInputData);
+
+            writeInt64Attr(file, attrType, attrSpace, "orbbec_depth_meta_timestamp",
+                           task.orbbec.depthMetadata.timestamp);
+            writeInt64Attr(file, attrType, attrSpace, "orbbec_depth_meta_sensor_timestamp",
+                           task.orbbec.depthMetadata.sensorTimestamp);
+            writeInt64Attr(file, attrType, attrSpace, "orbbec_depth_meta_frame_number",
+                           task.orbbec.depthMetadata.frameNumber);
+            writeInt64Attr(file, attrType, attrSpace, "orbbec_depth_meta_exposure",
+                           task.orbbec.depthMetadata.exposure);
+            writeInt64Attr(file, attrType, attrSpace, "orbbec_depth_meta_gpio_input_data",
+                           task.orbbec.depthMetadata.gpioInputData);
+
+            writeInt64Attr(file, attrType, attrSpace, "orbbec_raw_color_meta_timestamp",
+                           task.orbbec.rawColorMetadata.timestamp);
+            writeInt64Attr(file, attrType, attrSpace, "orbbec_raw_color_meta_sensor_timestamp",
+                           task.orbbec.rawColorMetadata.sensorTimestamp);
+            writeInt64Attr(file, attrType, attrSpace, "orbbec_raw_color_meta_frame_number",
+                           task.orbbec.rawColorMetadata.frameNumber);
+            writeInt64Attr(file, attrType, attrSpace, "orbbec_raw_color_meta_exposure",
+                           task.orbbec.rawColorMetadata.exposure);
+            writeInt64Attr(file, attrType, attrSpace, "orbbec_raw_color_meta_gpio_input_data",
+                           task.orbbec.rawColorMetadata.gpioInputData);
+
+            writeInt64Attr(file, attrType, attrSpace, "orbbec_raw_depth_meta_timestamp",
+                           task.orbbec.rawDepthMetadata.timestamp);
+            writeInt64Attr(file, attrType, attrSpace, "orbbec_raw_depth_meta_sensor_timestamp",
+                           task.orbbec.rawDepthMetadata.sensorTimestamp);
+            writeInt64Attr(file, attrType, attrSpace, "orbbec_raw_depth_meta_frame_number",
+                           task.orbbec.rawDepthMetadata.frameNumber);
+            writeInt64Attr(file, attrType, attrSpace, "orbbec_raw_depth_meta_exposure",
+                           task.orbbec.rawDepthMetadata.exposure);
+            writeInt64Attr(file, attrType, attrSpace, "orbbec_raw_depth_meta_gpio_input_data",
+                           task.orbbec.rawDepthMetadata.gpioInputData);
         }
 
         file.close();
@@ -353,12 +553,35 @@ void DataRecorder::writeImages(const WriteTask &task) {
                               * task.orbbec.colorHeight * 3;
 
             cv::Mat rgb;
-            if (task.orbbec.colorData.size() < rawBgrSize) {
+            if (task.orbbec.colorFormat == OB_FORMAT_MJPG ||
+                (task.orbbec.colorFormat == OB_FORMAT_UNKNOWN &&
+                 task.orbbec.colorData.size() < rawBgrSize)) {
                 // Compressed MJPG → decode first
                 cv::Mat jpgBuf(1, static_cast<int>(task.orbbec.colorData.size()),
                                CV_8UC1,
                                const_cast<uint8_t *>(task.orbbec.colorData.data()));
                 rgb = cv::imdecode(jpgBuf, cv::IMREAD_COLOR);
+            } else if (task.orbbec.colorFormat == OB_FORMAT_RGB) {
+                cv::Mat raw(task.orbbec.colorHeight, task.orbbec.colorWidth,
+                            CV_8UC3,
+                            const_cast<uint8_t *>(task.orbbec.colorData.data()));
+                cv::cvtColor(raw, rgb, cv::COLOR_RGB2BGR);
+            } else if (task.orbbec.colorFormat == OB_FORMAT_YUYV ||
+                       task.orbbec.colorFormat == OB_FORMAT_YUY2) {
+                cv::Mat raw(task.orbbec.colorHeight, task.orbbec.colorWidth,
+                            CV_8UC2,
+                            const_cast<uint8_t *>(task.orbbec.colorData.data()));
+                cv::cvtColor(raw, rgb, cv::COLOR_YUV2BGR_YUY2);
+            } else if (task.orbbec.colorFormat == OB_FORMAT_UYVY) {
+                cv::Mat raw(task.orbbec.colorHeight, task.orbbec.colorWidth,
+                            CV_8UC2,
+                            const_cast<uint8_t *>(task.orbbec.colorData.data()));
+                cv::cvtColor(raw, rgb, cv::COLOR_YUV2BGR_UYVY);
+            } else if (task.orbbec.colorFormat == OB_FORMAT_NV12) {
+                cv::Mat raw(task.orbbec.colorHeight + task.orbbec.colorHeight / 2,
+                            task.orbbec.colorWidth, CV_8UC1,
+                            const_cast<uint8_t *>(task.orbbec.colorData.data()));
+                cv::cvtColor(raw, rgb, cv::COLOR_YUV2BGR_NV12);
             } else {
                 rgb = cv::Mat(task.orbbec.colorHeight, task.orbbec.colorWidth,
                               CV_8UC3,
@@ -396,19 +619,24 @@ void DataRecorder::writeImages(const WriteTask &task) {
         Log::error("Recorder", "Depth write error for " + idxStr + ": " + e.what());
     }
 
-    // Append images.txt with filename and start/end timestamps (µs)
+    // Append images.txt with the actual Orbbec timestamps for each image.
+    // A still image has one SDK timestamp rather than an interval, so the
+    // start/end fields are both set to that image's own timestamp.
     try {
-        uint64_t evStart = task.evStartTs;
-        uint64_t evEnd   = task.evEndTs;
-        if (evStart == 0) evStart = task.orbbec.colorTimestampUs ? task.orbbec.colorTimestampUs : task.orbbec.depthTimestampUs;
-        if (evEnd == 0)   evEnd   = task.orbbec.depthTimestampUs ? task.orbbec.depthTimestampUs : task.orbbec.colorTimestampUs;
-
         std::lock_guard<std::mutex> lk(imagesTxtMutex_);
         std::string listPath = (frameDir_ / "images.txt").string();
         std::ofstream ofs(listPath, std::ios::app);
         if (ofs) {
-            if (wroteRgb) ofs << std::filesystem::path(writtenRgbPath).filename().string() << " " << evStart << " " << evEnd << "\n";
-            if (wroteDepth) ofs << std::filesystem::path(writtenDepthPath).filename().string() << " " << evStart << " " << evEnd << "\n";
+            if (wroteRgb) {
+                uint64_t ts = task.orbbec.colorTimestampUs;
+                ofs << std::filesystem::path(writtenRgbPath).filename().string()
+                    << " " << ts << " " << ts << "\n";
+            }
+            if (wroteDepth) {
+                uint64_t ts = task.orbbec.depthTimestampUs;
+                ofs << std::filesystem::path(writtenDepthPath).filename().string()
+                    << " " << ts << " " << ts << "\n";
+            }
             ofs.close();
         } else {
             Log::error("Recorder", "Failed to open images.txt for append: " + listPath);
@@ -416,5 +644,97 @@ void DataRecorder::writeImages(const WriteTask &task) {
     }
     catch (const std::exception &e) {
         Log::error("Recorder", "images.txt write error for " + idxStr + ": " + e.what());
+    }
+
+    // Append a machine-readable timestamp diagnostic file.  The mapped_* fields
+    // are Orbbec hardware timestamps transformed into the event-camera timeline.
+    try {
+        std::lock_guard<std::mutex> lk(imagesTxtMutex_);
+        std::filesystem::path csvPath = frameDir_ / "sync_timestamps.csv";
+        const bool writeHeader = !std::filesystem::exists(csvPath);
+        std::ofstream ofs(csvPath.string(), std::ios::app);
+        if (ofs) {
+            if (writeHeader) {
+                ofs << "idx,seq_num,rgb_file,depth_file,"
+                    << "rgb_raw_ts_us,depth_raw_ts_us,"
+                    << "rgb_system_ts_us,depth_system_ts_us,"
+                    << "rgb_global_ts_us,depth_global_ts_us,"
+                    << "rgb_frame_index,depth_frame_index,"
+                    << "raw_rgb_frame_index,raw_depth_frame_index,"
+                    << "raw_rgb_ts_us,raw_depth_ts_us,"
+                    << "raw_rgb_system_ts_us,raw_depth_system_ts_us,"
+                    << "raw_rgb_global_ts_us,raw_depth_global_ts_us,"
+                    << "rgb_color_format,"
+                    << "rgb_prop_auto_exposure,rgb_prop_exposure,rgb_prop_gain,"
+                    << "rgb_prop_auto_white_balance,rgb_prop_white_balance,"
+                    << "rgb_prop_auto_exposure_priority,rgb_prop_power_line_frequency,";
+                appendMetadataHeader(ofs, "rgb");
+                appendMetadataHeader(ofs, "depth");
+                appendMetadataHeader(ofs, "raw_rgb");
+                appendMetadataHeader(ofs, "raw_depth");
+                ofs
+                    << "rgb_mapped_event_ts_us,depth_mapped_event_ts_us,"
+                    << "rgb_event_visual_offset_us,rgb_visual_mapped_event_ts_us,"
+                    << "event_start_ts_us,event_end_ts_us,event_trigger_start_seq,event_trigger_end_seq,"
+                    << "delta_orbbec_to_event_us,event_minus_rgb_mapped_us,event_minus_rgb_visual_mapped_us,"
+                    << "depth_minus_rgb_raw_us,depth_minus_rgb_mapped_us\n";
+            }
+            const int64_t depthMinusRgbRaw =
+                static_cast<int64_t>(task.orbbec.depthTimestampUs)
+                - static_cast<int64_t>(task.orbbec.colorTimestampUs);
+            const int64_t depthMinusRgbMapped =
+                task.mappedDepthTimestampUs - task.mappedColorTimestampUs;
+            ofs << task.idx << ","
+                << task.seqNum << ","
+                << (wroteRgb ? std::filesystem::path(writtenRgbPath).filename().string() : "") << ","
+                << (wroteDepth ? std::filesystem::path(writtenDepthPath).filename().string() : "") << ","
+                << task.orbbec.colorTimestampUs << ","
+                << task.orbbec.depthTimestampUs << ","
+                << task.orbbec.colorSystemTimestampUs << ","
+                << task.orbbec.depthSystemTimestampUs << ","
+                << task.orbbec.colorGlobalTimestampUs << ","
+                << task.orbbec.depthGlobalTimestampUs << ","
+                << task.orbbec.colorFrameIndex << ","
+                << task.orbbec.depthFrameIndex << ","
+                << task.orbbec.rawColorFrameIndex << ","
+                << task.orbbec.rawDepthFrameIndex << ","
+                << task.orbbec.rawColorTimestampUs << ","
+                << task.orbbec.rawDepthTimestampUs << ","
+                << task.orbbec.rawColorSystemTimestampUs << ","
+                << task.orbbec.rawDepthSystemTimestampUs << ","
+                << task.orbbec.rawColorGlobalTimestampUs << ","
+                << task.orbbec.rawDepthGlobalTimestampUs << ","
+                << static_cast<int>(task.orbbec.colorFormat) << ","
+                << task.orbbec.colorAutoExposure << ","
+                << task.orbbec.colorExposure << ","
+                << task.orbbec.colorGain << ","
+                << task.orbbec.colorAutoWhiteBalance << ","
+                << task.orbbec.colorWhiteBalance << ","
+                << task.orbbec.colorAutoExposurePriority << ","
+                << task.orbbec.colorPowerLineFrequency << ",";
+            appendMetadataRow(ofs, task.orbbec.colorMetadata);
+            appendMetadataRow(ofs, task.orbbec.depthMetadata);
+            appendMetadataRow(ofs, task.orbbec.rawColorMetadata);
+            appendMetadataRow(ofs, task.orbbec.rawDepthMetadata);
+            ofs
+                << task.mappedColorTimestampUs << ","
+                << task.mappedDepthTimestampUs << ","
+                << task.rgbEventVisualOffsetUs << ","
+                << task.visualMappedColorTimestampUs << ","
+                << task.eventStartTs << ","
+                << task.eventEndTs << ","
+                << task.eventTriggerStartSeq << ","
+                << task.eventTriggerEndSeq << ","
+                << task.deltaOrbToEvsUs << ","
+                << task.clockDiffUs << ","
+                << task.visualClockDiffUs << ","
+                << depthMinusRgbRaw << ","
+                << depthMinusRgbMapped << "\n";
+        } else {
+            Log::error("Recorder", "Failed to open sync_timestamps.csv for append: " + csvPath.string());
+        }
+    }
+    catch (const std::exception &e) {
+        Log::error("Recorder", "sync_timestamps.csv write error for " + idxStr + ": " + e.what());
     }
 }

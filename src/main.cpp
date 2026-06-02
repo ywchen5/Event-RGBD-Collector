@@ -16,9 +16,9 @@
 #include <memory>
 #include <string>
 #include <cstring>
+#include <exception>
 #include <algorithm>
 #include <cctype>
-#include <exception>
 
 // OpenCV for visualisation
 #include <opencv2/core.hpp>
@@ -128,18 +128,8 @@ static std::string getPositional(int argc, char *argv[]) {
 static cv::Mat decodeColor(const OrbbecFrameData &ob) {
     if (ob.colorData.empty() || ob.colorWidth == 0) return {};
     size_t rawBgrSize = static_cast<size_t>(ob.colorWidth) * ob.colorHeight * 3;
-    if (ob.colorFormat == OB_FORMAT_RGB && ob.colorData.size() >= rawBgrSize) {
-        cv::Mat rgb(ob.colorHeight, ob.colorWidth, CV_8UC3,
-                    const_cast<uint8_t *>(ob.colorData.data()));
-        cv::Mat bgr;
-        cv::cvtColor(rgb, bgr, cv::COLOR_RGB2BGR);
-        return bgr;
-    }
-    if (ob.colorFormat == OB_FORMAT_BGR && ob.colorData.size() >= rawBgrSize) {
-        return cv::Mat(ob.colorHeight, ob.colorWidth, CV_8UC3,
-                       const_cast<uint8_t *>(ob.colorData.data())).clone();
-    }
-    if (ob.colorData.size() < rawBgrSize) {
+    if (ob.colorFormat == OB_FORMAT_MJPG ||
+        (ob.colorFormat == OB_FORMAT_UNKNOWN && ob.colorData.size() < rawBgrSize)) {
         // MJPG compressed → decode
         // @code-review: for now we use opencv for visualization, maybe the decoding can not be optimized here
         // @code-review: this will be called for every frame, a waste.
@@ -147,7 +137,34 @@ static cv::Mat decodeColor(const OrbbecFrameData &ob) {
                     const_cast<uint8_t *>(ob.colorData.data()));
         return cv::imdecode(buf, cv::IMREAD_COLOR);
     }
-    // Raw BGR
+    if (ob.colorFormat == OB_FORMAT_RGB) {
+        cv::Mat rgb(ob.colorHeight, ob.colorWidth, CV_8UC3,
+                    const_cast<uint8_t *>(ob.colorData.data()));
+        cv::Mat bgr;
+        cv::cvtColor(rgb, bgr, cv::COLOR_RGB2BGR);
+        return bgr;
+    }
+    if (ob.colorFormat == OB_FORMAT_YUYV || ob.colorFormat == OB_FORMAT_YUY2) {
+        cv::Mat yuyv(ob.colorHeight, ob.colorWidth, CV_8UC2,
+                     const_cast<uint8_t *>(ob.colorData.data()));
+        cv::Mat bgr;
+        cv::cvtColor(yuyv, bgr, cv::COLOR_YUV2BGR_YUY2);
+        return bgr;
+    }
+    if (ob.colorFormat == OB_FORMAT_UYVY) {
+        cv::Mat uyvy(ob.colorHeight, ob.colorWidth, CV_8UC2,
+                     const_cast<uint8_t *>(ob.colorData.data()));
+        cv::Mat bgr;
+        cv::cvtColor(uyvy, bgr, cv::COLOR_YUV2BGR_UYVY);
+        return bgr;
+    }
+    if (ob.colorFormat == OB_FORMAT_NV12) {
+        cv::Mat nv12(ob.colorHeight + ob.colorHeight / 2, ob.colorWidth, CV_8UC1,
+                     const_cast<uint8_t *>(ob.colorData.data()));
+        cv::Mat bgr;
+        cv::cvtColor(nv12, bgr, cv::COLOR_YUV2BGR_NV12);
+        return bgr;
+    }
     return cv::Mat(ob.colorHeight, ob.colorWidth, CV_8UC3,
                    const_cast<uint8_t *>(ob.colorData.data())).clone();
 }
@@ -284,6 +301,12 @@ int main(int argc, char *argv[]) {
     bool displayEnabled = !hasFlag(argc, argv, "--no-display");
     std::string outputRoot = getFlagValue(argc, argv, "--output",
                              getFlagValue(argc, argv, "-o", "./output"));
+    int64_t maxSyncedPairs = getInt64FlagValue(argc, argv, "--max-synced-pairs", 0);
+    int64_t rgbEventOffsetUs = getInt64FlagValue(argc, argv, "--rgb-event-offset-us", 0);
+    int64_t rgbEventOffsetFrames = getInt64FlagValue(argc, argv, "--rgb-event-offset-frames", 0);
+    if (rgbEventOffsetFrames != 0) {
+        rgbEventOffsetUs += rgbEventOffsetFrames * 33333;
+    }
     OrbbecColorControlConfig colorControl;
     std::string colorFormatName;
     colorControl.colorFormat = parseColorFormat(
@@ -322,10 +345,18 @@ int main(int argc, char *argv[]) {
     if (storeEnabled) {
         Log::info("Main", "Recording enabled.  Output root: " + outputRoot);
     }
-    Log::info("Main", "Orbbec color format: " + colorControl.colorFormatName);
     if (displayEnabled) {
         Log::info("Main", "Visualisation enabled.  Press 'q' or ESC to quit.");
     }
+    if (maxSyncedPairs > 0) {
+        Log::info("Main", "Diagnostic capture limit: "
+                  + std::to_string(maxSyncedPairs) + " synced pairs.");
+    }
+    if (rgbEventOffsetUs != 0) {
+        Log::info("Main", "RGB-event visual offset enabled: "
+                  + std::to_string(rgbEventOffsetUs) + " us.");
+    }
+    Log::info("Main", "Orbbec color format: " + colorControl.colorFormatName);
 
     // ════════════════════════════════════════════════════════════════════
     //  1.  Orbbec camera  –  runs in its own thread
@@ -370,7 +401,7 @@ int main(int argc, char *argv[]) {
     // ════════════════════════════════════════════════════════════════════
     std::unique_ptr<SyncProcessor> sync;
     if (hasEventCam) {
-        sync = std::make_unique<SyncProcessor>(*orbbec, *prophesee);
+        sync = std::make_unique<SyncProcessor>(*orbbec, *prophesee, rgbEventOffsetUs);
         sync->start();
     }
 
@@ -423,7 +454,13 @@ int main(int argc, char *argv[]) {
 
         if (hasEventCam && sync) {
             // ── Synced mode: consume matched pairs ──────────────────────
-            if (sync->getLatestPair(pair) && pair.valid) {
+            SyncedPair displayPair;
+            bool hasDisplayPair = false;
+
+            while (sync->popPair(pair)) {
+                if (!pair.valid) {
+                    continue;
+                }
                 gotFrame = true;
                 pairCount++;
 
@@ -434,20 +471,33 @@ int main(int argc, char *argv[]) {
 
                 // ── Update panel images ─────────────────────────────────
                 if (displayEnabled) {
-                    cv::Mat evFrame = cdFrameToMat(pair.cdFrame);
-                    if (!evFrame.empty()) {
-                        cv::resize(evFrame, panelEvent, cv::Size(PANEL_W, PANEL_H));
-                    }
+                    displayPair = pair;
+                    hasDisplayPair = true;
+                }
 
-                    cv::Mat rgb = decodeColor(pair.orbbec);
-                    if (!rgb.empty()) {
-                        cv::resize(rgb, panelRGB, cv::Size(PANEL_W, PANEL_H));
-                    }
+                if (maxSyncedPairs > 0 &&
+                    pairCount >= static_cast<uint64_t>(maxSyncedPairs)) {
+                    Log::info("Main", "Reached diagnostic capture limit: "
+                              + std::to_string(pairCount) + " synced pairs.");
+                    g_stop.store(true);
+                    break;
+                }
+            }
 
-                    cv::Mat depthJet = coloriseDepth(pair.orbbec);
-                    if (!depthJet.empty()) {
-                        cv::resize(depthJet, panelDepth, cv::Size(PANEL_W, PANEL_H));
-                    }
+            if (displayEnabled && hasDisplayPair) {
+                cv::Mat evFrame = cdFrameToMat(displayPair.cdFrame);
+                if (!evFrame.empty()) {
+                    cv::resize(evFrame, panelEvent, cv::Size(PANEL_W, PANEL_H));
+                }
+
+                cv::Mat rgb = decodeColor(displayPair.orbbec);
+                if (!rgb.empty()) {
+                    cv::resize(rgb, panelRGB, cv::Size(PANEL_W, PANEL_H));
+                }
+
+                cv::Mat depthJet = coloriseDepth(displayPair.orbbec);
+                if (!depthJet.empty()) {
+                    cv::resize(depthJet, panelDepth, cv::Size(PANEL_W, PANEL_H));
                 }
             }
         } else {
