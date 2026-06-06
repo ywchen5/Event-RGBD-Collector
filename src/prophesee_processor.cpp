@@ -4,6 +4,13 @@
 #include <cstring>
 #include <algorithm>
 
+namespace {
+int64_t steadyNowUs() {
+    return std::chrono::duration_cast<std::chrono::microseconds>(
+        std::chrono::steady_clock::now().time_since_epoch()).count();
+}
+}
+
 // ============================================================================
 //  Construction / Destruction
 // ============================================================================
@@ -192,6 +199,7 @@ void PropheseeProcessor::processingLoop() {
                 if (it->p != 1) continue;   // only rising edges
 
                 int64_t currentTrigTs = static_cast<int64_t>(it->t);
+                const int64_t currentTriggerHostReceiptUs = steadyNowUs();
                 
                 // @code-review: maybe a crucial part!!!
                 // ── Minimum-interval filter ─────────────────────────
@@ -219,6 +227,7 @@ void PropheseeProcessor::processingLoop() {
                     // ── First trigger activation ───────────────────────
                     triggerActive_ = true;
                     lastTriggerTs_ = currentTrigTs;
+                    lastTriggerHostReceiptUs_ = currentTriggerHostReceiptUs;
 
                     // Any events in the buffer that are AFTER the trigger
                     // belong to the first slice interval → keep them.
@@ -257,6 +266,8 @@ void PropheseeProcessor::processingLoop() {
                         slice.endTs   = currentTrigTs;
                         slice.triggerStartSeq = acceptedSeq - 1;
                         slice.triggerEndSeq = acceptedSeq;
+                        slice.triggerStartHostReceiptUs = lastTriggerHostReceiptUs_;
+                        slice.triggerEndHostReceiptUs = currentTriggerHostReceiptUs;
                         slice.valid   = true;
                         const int64_t sliceStartTs = slice.startTs;
                         const int64_t sliceEndTs = slice.endTs;
@@ -292,6 +303,7 @@ void PropheseeProcessor::processingLoop() {
                     }
 
                     lastTriggerTs_ = currentTrigTs;
+                    lastTriggerHostReceiptUs_ = currentTriggerHostReceiptUs;
                 }
             }
         });

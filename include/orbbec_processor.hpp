@@ -39,6 +39,7 @@ struct OrbbecFrameData {
     uint64_t rawColorFrameIndex = 0;
     uint64_t rawDepthFrameIndex = 0;
     uint64_t producedSeq = 0;
+    int64_t hostArrivalTimestampUs = 0;
 
     bool valid = false;
 };

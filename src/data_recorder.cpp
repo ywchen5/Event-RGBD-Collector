@@ -153,6 +153,7 @@ void DataRecorder::enqueue(const SyncedPair &pair) {
     task.idx    = recordIdx_.fetch_add(1);
     task.orbbec = pair.orbbec;      // copy
     task.events = pair.events;      // copy
+    task.eventCount = pair.events.events.size();
     task.eventStartTs = pair.events.startTs;
     task.eventEndTs = pair.events.endTs;
     task.seqNum = pair.seqNum;
@@ -160,6 +161,7 @@ void DataRecorder::enqueue(const SyncedPair &pair) {
     task.deltaOrbToEvsUs = pair.deltaOrbToEvsUs;
     task.mappedColorTimestampUs = pair.mappedColorTimestampUs;
     task.mappedDepthTimestampUs = pair.mappedDepthTimestampUs;
+    task.appliedRgbFrameOffset = pair.appliedRgbFrameOffset;
 
     // ── Push to HDF5 queue ──────────────────────────────────────────────
     {
@@ -178,14 +180,24 @@ void DataRecorder::enqueue(const SyncedPair &pair) {
         WriteTask imgTask;
         imgTask.idx    = task.idx;
         imgTask.orbbec = std::move(task.orbbec);
+        imgTask.eventCount = task.eventCount;
         imgTask.eventStartTs = task.eventStartTs;
         imgTask.eventEndTs = task.eventEndTs;
+        imgTask.events.startTs = task.events.startTs;
+        imgTask.events.endTs = task.events.endTs;
+        imgTask.events.triggerStartSeq = task.events.triggerStartSeq;
+        imgTask.events.triggerEndSeq = task.events.triggerEndSeq;
+        imgTask.events.sliceSeq = task.events.sliceSeq;
+        imgTask.events.triggerStartHostReceiptUs = task.events.triggerStartHostReceiptUs;
+        imgTask.events.triggerEndHostReceiptUs = task.events.triggerEndHostReceiptUs;
+        imgTask.events.valid = task.events.valid;
         imgTask.seqNum = task.seqNum;
         imgTask.clockDiffUs = task.clockDiffUs;
         imgTask.deltaOrbToEvsUs = task.deltaOrbToEvsUs;
         imgTask.mappedColorTimestampUs = task.mappedColorTimestampUs;
         imgTask.mappedDepthTimestampUs = task.mappedDepthTimestampUs;
-        // imgTask.events left empty – not needed for images
+        imgTask.appliedRgbFrameOffset = task.appliedRgbFrameOffset;
+        // imgTask.events.events left empty – not needed for images/CSV metadata.
 
         std::lock_guard<std::mutex> lk(imageQueueMutex_);
         if (imageQueue_.size() >= MAX_IMAGE_QUEUE) {
@@ -444,6 +456,11 @@ void DataRecorder::writeImages(const WriteTask &task) {
         if (ofs) {
             if (writeHeader) {
                 ofs << "idx,seq_num,rgb_file,depth_file,"
+                    << "color_idx,depth_idx,raw_color_idx,raw_depth_idx,orbbec_produced_seq,"
+                    << "event_slice_seq,event_trigger_start_seq,event_trigger_end_seq,event_count,"
+                    << "applied_rgb_frame_offset,"
+                    << "orbbec_host_arrival_us,event_trigger_start_host_us,event_trigger_end_host_us,"
+                    << "orbbec_host_minus_trigger_start_us,orbbec_host_minus_trigger_end_us,"
                     << "rgb_raw_ts_us,depth_raw_ts_us,"
                     << "rgb_mapped_event_ts_us,depth_mapped_event_ts_us,"
                     << "event_start_ts_us,event_end_ts_us,"
@@ -455,10 +472,29 @@ void DataRecorder::writeImages(const WriteTask &task) {
                 - static_cast<int64_t>(task.orbbec.colorTimestampUs);
             const int64_t depthMinusRgbMapped =
                 task.mappedDepthTimestampUs - task.mappedColorTimestampUs;
+            const int64_t orbHostMinusTriggerStart =
+                task.orbbec.hostArrivalTimestampUs - task.events.triggerStartHostReceiptUs;
+            const int64_t orbHostMinusTriggerEnd =
+                task.orbbec.hostArrivalTimestampUs - task.events.triggerEndHostReceiptUs;
             ofs << task.idx << ","
                 << task.seqNum << ","
                 << (wroteRgb ? std::filesystem::path(writtenRgbPath).filename().string() : "") << ","
                 << (wroteDepth ? std::filesystem::path(writtenDepthPath).filename().string() : "") << ","
+                << task.orbbec.colorFrameIndex << ","
+                << task.orbbec.depthFrameIndex << ","
+                << task.orbbec.rawColorFrameIndex << ","
+                << task.orbbec.rawDepthFrameIndex << ","
+                << task.orbbec.producedSeq << ","
+                << task.events.sliceSeq << ","
+                << task.events.triggerStartSeq << ","
+                << task.events.triggerEndSeq << ","
+                << task.eventCount << ","
+                << task.appliedRgbFrameOffset << ","
+                << task.orbbec.hostArrivalTimestampUs << ","
+                << task.events.triggerStartHostReceiptUs << ","
+                << task.events.triggerEndHostReceiptUs << ","
+                << orbHostMinusTriggerStart << ","
+                << orbHostMinusTriggerEnd << ","
                 << task.orbbec.colorTimestampUs << ","
                 << task.orbbec.depthTimestampUs << ","
                 << task.mappedColorTimestampUs << ","

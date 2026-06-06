@@ -1,4 +1,4 @@
-#include "sync_processor.hpp"
+﻿#include "sync_processor.hpp"
 #include "logger.hpp"
 #include <chrono>
 #include <cmath>
@@ -100,11 +100,11 @@ void SyncProcessor::setCallback(PairCallback cb) {
 //  At startup the two devices power up at different times.  One may have
 //  accumulated many frames before the other delivers its first.  We
 //  cannot compare raw timestamps across device clocks (they are in
-//  completely different domains — e.g. Orbbec ~45 billion us vs
+//  completely different domains 鈥?e.g. Orbbec ~45 billion us vs
 //  Prophesee ~16 million us).
 //
 //  Strategy:
-//    1. Wait until both buffers have ≥ MIN_BOOTSTRAP_SAMPLES entries,
+//    1. Wait until both buffers have 鈮?MIN_BOOTSTRAP_SAMPLES entries,
 //       which proves both devices are actively streaming.
 //    2. In this diagnostic branch, keep startup buffers intact.
 //    3. Initialise deltaOrbToEvs_ from the first available pair.
@@ -113,83 +113,87 @@ void SyncProcessor::setCallback(PairCallback cb) {
 bool SyncProcessor::bootstrapAlignment() {
     if (orbBuf_.size() < MIN_BOOTSTRAP_SAMPLES ||
         evsBuf_.size() < MIN_BOOTSTRAP_SAMPLES) {
-        return false;   // not enough data yet — at least one side is still warming up
+        return false;
     }
 
-    {
-        const size_t orbInitial = orbBuf_.size();
-        const size_t evsInitial = evsBuf_.size();
-
-        const auto orbFront = orbBuf_.front();
-        const auto evsFront = evsBuf_.front();
-
-        const size_t orbDiscarded = 0;
-        const size_t evsDiscarded = 0;
-
-        int64_t orbTs = static_cast<int64_t>(orbBuf_.front().colorTimestampUs);
-        int64_t evsTs = evsBuf_.front().startTs;
-        deltaOrbToEvs_ = evsTs - orbTs;
-        initialDelta_  = deltaOrbToEvs_;
-
-        Log::LogBlock blk("Bootstrap Alignment");
-        blk.kv("Mode", "first-frame-no-discard");
-        blk.kv("Min samples", MIN_BOOTSTRAP_SAMPLES);
-        blk.kv("Orb initial", orbInitial);
-        blk.kv("Evs initial", evsInitial);
-        blk.kv("Producer Orb frames", orbbec_.producedFrameCount());
-        blk.kv("Producer Evs triggers", prophesee_.trigAccepted());
-        blk.kv("Producer Evs slices", prophesee_.slicesProduced());
-        blk.kv("Orb discarded", orbDiscarded);
-        blk.kv("Evs discarded", evsDiscarded);
-        blk.kv("Orb front", "seq=" + std::to_string(orbFront.producedSeq)
-               + " color_idx=" + std::to_string(orbFront.colorFrameIndex)
-               + " ts=" + std::to_string(orbFront.colorTimestampUs) + " us");
-        blk.kv("Orb selected", "seq=" + std::to_string(orbBuf_.front().producedSeq)
-               + " color_idx=" + std::to_string(orbBuf_.front().colorFrameIndex)
-               + " ts=" + std::to_string(orbBuf_.front().colorTimestampUs) + " us");
-        blk.kv("Evs front", "slice=" + std::to_string(evsFront.sliceSeq)
-               + " trig=" + std::to_string(evsFront.triggerStartSeq)
-               + "->" + std::to_string(evsFront.triggerEndSeq)
-               + " ts=" + std::to_string(evsFront.startTs)
-               + "->" + std::to_string(evsFront.endTs) + " us");
-        blk.kv("Evs selected", "slice=" + std::to_string(evsBuf_.front().sliceSeq)
-               + " trig=" + std::to_string(evsBuf_.front().triggerStartSeq)
-               + "->" + std::to_string(evsBuf_.front().triggerEndSeq)
-               + " ts=" + std::to_string(evsBuf_.front().startTs)
-               + "->" + std::to_string(evsBuf_.front().endTs) + " us");
-        blk.kv("Seq delta evs-orb", static_cast<int64_t>(evsBuf_.front().sliceSeq)
-               - static_cast<int64_t>(orbBuf_.front().producedSeq));
-        blk.kv("OrbTs", std::to_string(orbTs) + " us");
-        blk.kv("EvsTs", std::to_string(evsTs) + " us");
-        blk.kv("Delta (evs-orb)", std::to_string(deltaOrbToEvs_) + " us");
-        Log::banner(blk.title(), blk.body());
-
-        aligned_ = true;
-        return true;
+    if (orbBuf_.front().hostArrivalTimestampUs <= 0 ||
+        evsBuf_.front().triggerEndHostReceiptUs <= 0) {
+        Log::warn("Sync", "Waiting for host phase timestamps before bootstrap.");
+        return false;
     }
 
-    // Diagnostic branch: do not discard startup samples. This lets the
-    // saved 000000/000001/000002 pairs show the first samples delivered
-    // by each producer instead of the post-bootstrap newest samples.
+    const size_t orbInitial = orbBuf_.size();
+    const size_t evsInitial = evsBuf_.size();
+    const auto initialOrbFront = orbBuf_.front();
+    const auto initialEvsFront = evsBuf_.front();
+
     size_t orbDiscarded = 0;
+    const size_t evsDiscarded = 0;
 
-    size_t evsDiscarded = 0;
+    startupHostPhaseUs_ =
+        initialOrbFront.hostArrivalTimestampUs -
+        initialEvsFront.triggerEndHostReceiptUs;
 
-    // Initialise delta from the first startup pair.
-    int64_t orbTs = static_cast<int64_t>(orbBuf_.front().colorTimestampUs);
-    int64_t evsTs = evsBuf_.front().startTs;
-    deltaOrbToEvs_ = evsTs - orbTs;
-    initialDelta_  = deltaOrbToEvs_;
-
-    {
-        Log::LogBlock blk("Bootstrap Alignment");
-        blk.kv("Orb discarded", orbDiscarded);
-        blk.kv("Evs discarded", evsDiscarded);
-        blk.kv("OrbTs", std::to_string(orbTs) + " us");
-        blk.kv("EvsTs", std::to_string(evsTs) + " us");
-        blk.kv("Delta (evs-orb)", std::to_string(deltaOrbToEvs_) + " us");
-        Log::banner(blk.title(), blk.body());
+    if (startupHostPhaseUs_ < RGB_PHASE_THRESHOLD_US) {
+        // In this delivery phase E_k visually matches RGB_{k+1}.
+        if (orbBuf_.size() < 2) {
+            return false;
+        }
+        orbBuf_.pop_front();
+        orbDiscarded = 1;
+        orbDropCount_++;
+        appliedRgbFrameOffset_ = 1;
+    } else {
+        appliedRgbFrameOffset_ = 0;
     }
+
+    if (orbBuf_.empty()) {
+        return false;
+    }
+
+    const auto orbFront = orbBuf_.front();
+    const auto evsFront = evsBuf_.front();
+
+    int64_t orbTs = static_cast<int64_t>(orbFront.colorTimestampUs);
+    int64_t evsTs = evsFront.startTs;
+    deltaOrbToEvs_ = evsTs - orbTs;
+    initialDelta_ = deltaOrbToEvs_;
+
+    Log::LogBlock blk("Bootstrap Alignment");
+    blk.kv("Mode", "host-phase-auto-rgb-offset");
+    blk.kv("Startup host phase", std::to_string(startupHostPhaseUs_) + " us");
+    blk.kv("Phase threshold", std::to_string(RGB_PHASE_THRESHOLD_US) + " us");
+    blk.kv("Applied RGB frame offset", appliedRgbFrameOffset_);
+    blk.kv("Min samples", MIN_BOOTSTRAP_SAMPLES);
+    blk.kv("Orb initial", orbInitial);
+    blk.kv("Evs initial", evsInitial);
+    blk.kv("Producer Orb frames", orbbec_.producedFrameCount());
+    blk.kv("Producer Evs triggers", prophesee_.trigAccepted());
+    blk.kv("Producer Evs slices", prophesee_.slicesProduced());
+    blk.kv("Orb discarded", orbDiscarded);
+    blk.kv("Evs discarded", evsDiscarded);
+    blk.kv("Initial Orb front", "seq=" + std::to_string(initialOrbFront.producedSeq)
+           + " color_idx=" + std::to_string(initialOrbFront.colorFrameIndex)
+           + " host=" + std::to_string(initialOrbFront.hostArrivalTimestampUs) + " us");
+    blk.kv("Initial Evs front", "slice=" + std::to_string(initialEvsFront.sliceSeq)
+           + " trig=" + std::to_string(initialEvsFront.triggerStartSeq)
+           + "->" + std::to_string(initialEvsFront.triggerEndSeq)
+           + " trigger_end_host="
+           + std::to_string(initialEvsFront.triggerEndHostReceiptUs) + " us");
+    blk.kv("Orb selected", "seq=" + std::to_string(orbFront.producedSeq)
+           + " color_idx=" + std::to_string(orbFront.colorFrameIndex)
+           + " ts=" + std::to_string(orbFront.colorTimestampUs) + " us");
+    blk.kv("Evs selected", "slice=" + std::to_string(evsFront.sliceSeq)
+           + " trig=" + std::to_string(evsFront.triggerStartSeq)
+           + "->" + std::to_string(evsFront.triggerEndSeq)
+           + " ts=" + std::to_string(evsFront.startTs)
+           + "->" + std::to_string(evsFront.endTs) + " us");
+    blk.kv("Seq delta evs-orb", static_cast<int64_t>(evsFront.sliceSeq)
+           - static_cast<int64_t>(orbFront.producedSeq));
+    blk.kv("OrbTs", std::to_string(orbTs) + " us");
+    blk.kv("EvsTs", std::to_string(evsTs) + " us");
+    blk.kv("Delta (evs-orb)", std::to_string(deltaOrbToEvs_) + " us");
+    Log::banner(blk.title(), blk.body());
 
     aligned_ = true;
     return true;
@@ -208,7 +212,7 @@ void SyncProcessor::syncLoop() {
     while (!stopRequested_.load()) {
         bool hasData = false;
 
-        // ── 1. Drain Orbbec queue into local deque ──────────────────
+        // 鈹€鈹€ 1. Drain Orbbec queue into local deque 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
         {
             OrbbecFrameData tmp;
             while (orbbec_.popFrame(tmp)) {
@@ -267,7 +271,7 @@ void SyncProcessor::syncLoop() {
             }
         }
 
-        // ── 2. Drain Prophesee queue into local deque ───────────────
+        // 鈹€鈹€ 2. Drain Prophesee queue into local deque 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
         {
             EventSliceData tmp;
             while (prophesee_.popSlice(tmp)) {
@@ -282,14 +286,14 @@ void SyncProcessor::syncLoop() {
             }
         }
 
-        // ── 2.5  Bootstrap: wait for enough data, then align ────────
+        // 鈹€鈹€ 2.5  Bootstrap: wait for enough data, then align 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
         if (!aligned_) {
             if (!bootstrapAlignment()) {
-                // Not ready yet – log status occasionally
+                // Not ready yet 鈥?log status occasionally
                 auto now = std::chrono::steady_clock::now();
                 double elapsed = std::chrono::duration<double>(now - lastMonitor).count();
                 if (elapsed >= MONITOR_INTERVAL_SEC) {
-                    Log::info("Sync", "Waiting for bootstrap…  OrbBuf:" + std::to_string(orbBuf_.size())
+                    Log::info("Sync", "Waiting for bootstrap鈥? OrbBuf:" + std::to_string(orbBuf_.size())
                              + "  EvsBuf:" + std::to_string(evsBuf_.size()));
                     lastMonitor = now;
                 }
@@ -299,10 +303,10 @@ void SyncProcessor::syncLoop() {
                 }
                 continue;   // skip pairing until aligned
             }
-            // Bootstrap just succeeded – fall through to pairing
+            // Bootstrap just succeeded 鈥?fall through to pairing
         }
 
-        // ── 3. Nearest-timestamp pairing ────────────────────────────
+        // 鈹€鈹€ 3. Nearest-timestamp pairing 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
         //
         //    The event camera produces N trigger slices per Orbbec
         //    frame (N >= 1, typically 2 at 60 Hz triggers vs 30 fps).
@@ -363,6 +367,7 @@ void SyncProcessor::syncLoop() {
             pair.deltaOrbToEvsUs = pairDeltaOrbToEvs;
             pair.mappedColorTimestampUs = static_cast<int64_t>(pair.orbbec.colorTimestampUs) + pairDeltaOrbToEvs;
             pair.mappedDepthTimestampUs = static_cast<int64_t>(pair.orbbec.depthTimestampUs) + pairDeltaOrbToEvs;
+            pair.appliedRgbFrameOffset = appliedRgbFrameOffset_;
             pair.valid       = true;
 
             if (pair.seqNum < 12) {
@@ -379,6 +384,7 @@ void SyncProcessor::syncLoop() {
                           + " event_end=" + std::to_string(pair.events.endTs)
                           + " events=" + std::to_string(pair.events.events.size())
                           + " best_idx=" + std::to_string(bestIdx)
+                          + " applied_rgb_offset=" + std::to_string(pair.appliedRgbFrameOffset)
                           + " clock_diff=" + std::to_string(clockDiff) + " us");
             }
 
@@ -413,7 +419,7 @@ void SyncProcessor::syncLoop() {
             }
         }
 
-        // ── 4. Stall guard ─────────────────────────────────────────────
+        // 鈹€鈹€ 4. Stall guard 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
         if (orbBuf_.size() > MAX_LEAD && evsBuf_.empty()) {
             orbBuf_.pop_front();
             orbDropCount_++;
@@ -423,7 +429,7 @@ void SyncProcessor::syncLoop() {
             evsDropCount_++;
         }
 
-        // ── 5. Periodic monitoring ─────────────────────────────────────
+        // 鈹€鈹€ 5. Periodic monitoring 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
         auto now = std::chrono::steady_clock::now();
         double elapsed = std::chrono::duration<double>(now - lastMonitor).count();
         if (elapsed >= MONITOR_INTERVAL_SEC) {
@@ -440,7 +446,7 @@ void SyncProcessor::syncLoop() {
 
             double pairRate = pairCount_ / elapsed;
 
-            // ── Compute FOVs (degrees) ──────────────────────────────────
+            // 鈹€鈹€ Compute FOVs (degrees) 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
             // FOV = 2 * atan(sensor_half_size / focal_length) * 180/pi
             // Event camera intrinsics (hardcoded from calibration)
             constexpr double EVT_FX = 1697.0566;
@@ -454,14 +460,14 @@ void SyncProcessor::syncLoop() {
                 orbFovH = 2.0 * std::atan(orbIntr.width / (2.0 * orbIntr.fx)) * 180.0 / PI;
             }
 
-            // ── Elapsed time since system start ─────────────────────────
+            // 鈹€鈹€ Elapsed time since system start 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
             auto totalElapsed = std::chrono::steady_clock::now() - startTime_;
             int totalSec = static_cast<int>(std::chrono::duration<double>(totalElapsed).count());
             int mins = totalSec / 60;
             int secs = totalSec % 60;
             std::string elapsedStr = std::to_string(mins) + "m " + std::to_string(secs) + "s";
 
-            // ── Build consolidated status banner ────────────────────────
+            // 鈹€鈹€ Build consolidated status banner 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
             Log::LogBlock blk(Log::timestamp() + "  System Status");
             blk.section("Runtime");
             blk.kv("Uptime", elapsedStr);

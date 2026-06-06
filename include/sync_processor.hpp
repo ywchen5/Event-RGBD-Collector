@@ -40,6 +40,7 @@ struct SyncedPair {
     int64_t          mappedColorTimestampUs = 0;
     int64_t          mappedDepthTimestampUs = 0;
     int64_t          deltaOrbToEvsUs = 0;
+    int              appliedRgbFrameOffset = 0;
 
     bool valid = false;
 };
@@ -127,6 +128,9 @@ private:
     //    the case where one device starts much earlier than the other.
     bool     aligned_               = false;
     static constexpr size_t MIN_BOOTSTRAP_SAMPLES = 1;
+    static constexpr int64_t RGB_PHASE_THRESHOLD_US = 50000;
+    int      appliedRgbFrameOffset_ = 0;
+    int64_t  startupHostPhaseUs_ = 0;
 
     // ── Internal FIFO buffers ──────────────────────────────────────────
     //    Drain the per-sensor front-buffers into these deques so that

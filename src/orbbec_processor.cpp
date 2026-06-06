@@ -4,6 +4,13 @@
 #include <cstdlib>
 #include <cstring>
 
+namespace {
+int64_t steadyNowUs() {
+    return std::chrono::duration_cast<std::chrono::microseconds>(
+        std::chrono::steady_clock::now().time_since_epoch()).count();
+}
+}
+
 // ============================================================================
 //  Construction / Destruction
 // ============================================================================
@@ -168,6 +175,7 @@ void OrbbecProcessor::processingLoop() {
             // Wait up to 200 ms for a frameset (> 1 frame period at 30fps)
             auto frameSet = pipeline_->waitForFrames(200);
             if (!frameSet) continue;
+            const int64_t hostArrivalUs = steadyNowUs();
 
             // ── Pre-check: both depth & color must be present ──────────
             // The Align filter crashes (pFrame is nullptr) if either
@@ -269,6 +277,7 @@ void OrbbecProcessor::processingLoop() {
                 frame.depthFrameIndex = depthFrame->index();
                 frame.rawColorFrameIndex = rawColor->index();
                 frame.rawDepthFrameIndex = rawDepth->index();
+                frame.hostArrivalTimestampUs = hostArrivalUs;
 
                 frame.valid = true;
 
