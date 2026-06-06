@@ -81,6 +81,8 @@ struct OrbbecFrameData {
     uint64_t rawDepthSystemTimestampUs = 0;
     uint64_t rawColorGlobalTimestampUs = 0;
     uint64_t rawDepthGlobalTimestampUs = 0;
+    int64_t hostArrivalTimestampUs = 0;
+    uint64_t producedSeq = 0;
 
     OrbbecMetadataSnapshot colorMetadata;
     OrbbecMetadataSnapshot depthMetadata;
@@ -133,6 +135,9 @@ public:
     /// Check whether the processing thread is running.
     bool isRunning() const { return running_.load(); }
 
+    /// Total number of valid framesets produced by the worker.
+    uint64_t producedFrameCount() const { return producedFrameCount_.load(); }
+
 private:
     /// The actual processing loop executed on the worker thread.
     void processingLoop();
@@ -163,6 +168,7 @@ private:
 
     // ── Stats (readable from SyncProcessor monitor) ─────────────────────
     std::atomic<double> orbFps_{0.0};
+    std::atomic<uint64_t> producedFrameCount_{0};
 public:
     double fps() const { return orbFps_.load(); }
 private:

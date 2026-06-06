@@ -4,6 +4,13 @@
 #include <cstring>
 #include <algorithm>
 
+namespace {
+int64_t steadyNowUs() {
+    return std::chrono::duration_cast<std::chrono::microseconds>(
+        std::chrono::steady_clock::now().time_since_epoch()).count();
+}
+}
+
 // ============================================================================
 //  Construction / Destruction
 // ============================================================================
@@ -192,6 +199,7 @@ void PropheseeProcessor::processingLoop() {
                 if (it->p != 1) continue;   // only rising edges
 
                 int64_t currentTrigTs = static_cast<int64_t>(it->t);
+                const int64_t currentTriggerHostReceiptUs = steadyNowUs();
                 
                 // @code-review: maybe a crucial part!!!
                 // ── Minimum-interval filter ─────────────────────────
@@ -204,7 +212,12 @@ void PropheseeProcessor::processingLoop() {
                     continue;  // skip this trigger
                 }
 
-                const uint64_t currentTriggerSeq = trigAccepted_.fetch_add(1);
+                const uint64_t acceptedSeq = trigAccepted_.fetch_add(1) + 1;
+                if (acceptedSeq <= 12) {
+                    Log::info("Prophesee", "Trigger accepted #" + std::to_string(acceptedSeq)
+                              + " ts=" + std::to_string(currentTrigTs) + " us"
+                              + " active=" + std::to_string(triggerActive_ ? 1 : 0));
+                }
                 // @code-review: here the triggerActive_ design indicates that
                 //    the trigger can only be activated once, so do not test the case where
                 //    the trigger is deactivated and then reactivated for now.
@@ -214,7 +227,7 @@ void PropheseeProcessor::processingLoop() {
                     // ── First trigger activation ───────────────────────
                     triggerActive_ = true;
                     lastTriggerTs_ = currentTrigTs;
-                    lastTriggerSeq_ = currentTriggerSeq;
+                    lastTriggerHostReceiptUs_ = currentTriggerHostReceiptUs;
 
                     // Any events in the buffer that are AFTER the trigger
                     // belong to the first slice interval → keep them.
@@ -246,13 +259,20 @@ void PropheseeProcessor::processingLoop() {
 
                     // Publish slice
                     if (!sliceEvents.empty()) {
+                        const size_t sliceEventCount = sliceEvents.size();
                         EventSliceData slice;
                         slice.events  = std::move(sliceEvents);
                         slice.startTs = lastTriggerTs_;
                         slice.endTs   = currentTrigTs;
-                        slice.triggerStartSeq = lastTriggerSeq_;
-                        slice.triggerEndSeq = currentTriggerSeq;
+                        slice.triggerStartSeq = acceptedSeq - 1;
+                        slice.triggerEndSeq = acceptedSeq;
+                        slice.triggerStartHostReceiptUs = lastTriggerHostReceiptUs_;
+                        slice.triggerEndHostReceiptUs = currentTriggerHostReceiptUs;
                         slice.valid   = true;
+                        const int64_t sliceStartTs = slice.startTs;
+                        const int64_t sliceEndTs = slice.endTs;
+                        const uint64_t sliceSeq = slicesProduced_.fetch_add(1) + 1;
+                        slice.sliceSeq = sliceSeq;
 
                         {
                             std::lock_guard<std::mutex> lock(sliceMutex_);
@@ -262,10 +282,28 @@ void PropheseeProcessor::processingLoop() {
                             sliceQueue_.push_back(std::move(slice));
                             newSliceReady_.store(true);
                         }
+                        if (sliceSeq <= 12) {
+                            Log::info("Prophesee", "Slice produced #" + std::to_string(sliceSeq)
+                                      + " trigger_seq=" + std::to_string(acceptedSeq - 1)
+                                      + "->" + std::to_string(acceptedSeq)
+                                      + " start=" + std::to_string(sliceStartTs)
+                                      + " end=" + std::to_string(sliceEndTs)
+                                      + " dt=" + std::to_string(sliceEndTs - sliceStartTs)
+                                      + " us events=" + std::to_string(sliceEventCount));
+                        }
+                    } else {
+                        if (acceptedSeq <= 12) {
+                            Log::info("Prophesee", "Empty slice skipped trigger_seq="
+                                      + std::to_string(acceptedSeq - 1)
+                                      + "->" + std::to_string(acceptedSeq)
+                                      + " start=" + std::to_string(lastTriggerTs_)
+                                      + " end=" + std::to_string(currentTrigTs)
+                                      + " dt=" + std::to_string(currentTrigTs - lastTriggerTs_) + " us");
+                        }
                     }
 
                     lastTriggerTs_ = currentTrigTs;
-                    lastTriggerSeq_ = currentTriggerSeq;
+                    lastTriggerHostReceiptUs_ = currentTriggerHostReceiptUs;
                 }
             }
         });

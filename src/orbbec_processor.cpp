@@ -9,6 +9,11 @@
 
 namespace {
 
+int64_t steadyNowUs() {
+    return std::chrono::duration_cast<std::chrono::microseconds>(
+        std::chrono::steady_clock::now().time_since_epoch()).count();
+}
+
 int64_t readMetadataOrDefault(const std::shared_ptr<ob::Frame> &frame,
                               OBFrameMetadataType type) {
     if (!frame) return -1;
@@ -488,6 +493,7 @@ void OrbbecProcessor::processingLoop() {
             // Wait up to 200 ms for a frameset (> 1 frame period at 30fps)
             auto frameSet = pipeline_->waitForFrames(200);
             if (!frameSet) continue;
+            const int64_t hostArrivalUs = steadyNowUs();
 
             // ── Pre-check: both depth & color must be present ──────────
             // The Align filter crashes (pFrame is nullptr) if either
@@ -621,6 +627,7 @@ void OrbbecProcessor::processingLoop() {
                 frame.rawDepthSystemTimestampUs = rawDepth->systemTimeStampUs();
                 frame.rawColorGlobalTimestampUs = rawColor->globalTimeStampUs();
                 frame.rawDepthGlobalTimestampUs = rawDepth->globalTimeStampUs();
+                frame.hostArrivalTimestampUs = hostArrivalUs;
                 frame.colorMetadata = colorMeta;
                 frame.depthMetadata = depthMeta;
                 frame.rawColorMetadata = rawColorMeta;
@@ -634,6 +641,7 @@ void OrbbecProcessor::processingLoop() {
                 frame.colorPowerLineFrequency = cachedColorPowerLineFrequency;
 
                 frame.valid = true;
+                frame.producedSeq = producedFrameCount_.fetch_add(1) + 1;
 
                 std::lock_guard<std::mutex> lock(frameMutex_);
                 if (frameQueue_.size() >= MAX_QUEUE) {
