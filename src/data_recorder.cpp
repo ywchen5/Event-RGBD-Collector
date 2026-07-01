@@ -76,8 +76,7 @@ void DataRecorder::start() {
     stopRequested_.store(false);
     running_.store(true);
     recordIdx_.store(0);
-    hdf5Drops_.store(0);
-    imagDrops_.store(0);
+    pairDrops_.store(0);
     totalWritten_.store(0);
     lastDropWarnTime_ = std::chrono::steady_clock::now();
 
@@ -122,8 +121,7 @@ void DataRecorder::stop() {
     running_.store(false);
 
     Log::info("Recorder", "Stopped.  Written: " + std::to_string(totalWritten_.load())
-             + "  HDF5-drops: " + std::to_string(hdf5Drops_.load())
-             + "  Image-drops: " + std::to_string(imagDrops_.load()));
+             + "  Pair-drops: " + std::to_string(pairDrops_.load()));
 }
 
 // ============================================================================
@@ -136,9 +134,8 @@ void DataRecorder::emitDropWarning(const char *pool, size_t queueDepth) {
     if (std::chrono::duration_cast<std::chrono::seconds>(now - lastDropWarnTime_).count() >= 1) {
         lastDropWarnTime_ = now;
         Log::warn("Recorder", std::string(pool) + " queue full (depth="
-                 + std::to_string(queueDepth) + "), dropping oldest.  HDF5-drops="
-                 + std::to_string(hdf5Drops_.load()) + "  Img-drops="
-                 + std::to_string(imagDrops_.load()));
+                 + std::to_string(queueDepth) + "), dropping synced pair.  Pair-drops="
+                 + std::to_string(pairDrops_.load()));
     }
 }
 
@@ -149,64 +146,60 @@ void DataRecorder::emitDropWarning(const char *pool, size_t queueDepth) {
 void DataRecorder::enqueue(const SyncedPair &pair) {
     if (!running_.load()) return;
 
-    WriteTask task;
-    task.idx    = recordIdx_.fetch_add(1);
-    task.orbbec = pair.orbbec;      // copy
-    task.events = pair.events;      // copy
-    task.eventCount = pair.events.events.size();
-    task.eventStartTs = pair.events.startTs;
-    task.eventEndTs = pair.events.endTs;
-    task.seqNum = pair.seqNum;
-    task.clockDiffUs = pair.clockDiffUs;
-    task.deltaOrbToEvsUs = pair.deltaOrbToEvsUs;
-    task.mappedColorTimestampUs = pair.mappedColorTimestampUs;
-    task.mappedDepthTimestampUs = pair.mappedDepthTimestampUs;
-    task.appliedRgbFrameOffset = pair.appliedRgbFrameOffset;
+    const uint64_t idx = recordIdx_.fetch_add(1);
 
-    // ── Push to HDF5 queue ──────────────────────────────────────────────
+    WriteTask hdf5Task;
+    hdf5Task.idx = idx;
+    hdf5Task.events = pair.events;      // copy full event payload
+    hdf5Task.eventCount = pair.events.events.size();
+    hdf5Task.eventStartTs = pair.events.startTs;
+    hdf5Task.eventEndTs = pair.events.endTs;
+
+    WriteTask imgTask;
+    imgTask.idx    = idx;
+    imgTask.orbbec = pair.orbbec;       // copy image payload
+    imgTask.eventCount = hdf5Task.eventCount;
+    imgTask.eventStartTs = hdf5Task.eventStartTs;
+    imgTask.eventEndTs = hdf5Task.eventEndTs;
+    imgTask.events.startTs = pair.events.startTs;
+    imgTask.events.endTs = pair.events.endTs;
+    imgTask.events.triggerStartSeq = pair.events.triggerStartSeq;
+    imgTask.events.triggerEndSeq = pair.events.triggerEndSeq;
+    imgTask.events.sliceSeq = pair.events.sliceSeq;
+    imgTask.events.triggerStartHostReceiptUs = pair.events.triggerStartHostReceiptUs;
+    imgTask.events.triggerEndHostReceiptUs = pair.events.triggerEndHostReceiptUs;
+    imgTask.events.valid = pair.events.valid;
+    imgTask.seqNum = pair.seqNum;
+    imgTask.clockDiffUs = pair.clockDiffUs;
+    imgTask.deltaOrbToEvsUs = pair.deltaOrbToEvsUs;
+    imgTask.mappedColorTimestampUs = pair.mappedColorTimestampUs;
+    imgTask.mappedDepthTimestampUs = pair.mappedDepthTimestampUs;
+    imgTask.appliedRgbFrameOffset = pair.appliedRgbFrameOffset;
+    // imgTask.events.events left empty: image/CSV metadata does not need it.
+
+    const char *fullPool = nullptr;
+    size_t fullDepth = 0;
     {
-        std::lock_guard<std::mutex> lk(hdf5QueueMutex_);
+        std::scoped_lock lock(hdf5QueueMutex_, imageQueueMutex_);
         if (hdf5Queue_.size() >= MAX_HDF5_QUEUE) {
-            hdf5Queue_.pop_front();
-            hdf5Drops_.fetch_add(1);
-            emitDropWarning("HDF5", MAX_HDF5_QUEUE);
+            fullPool = "HDF5";
+            fullDepth = MAX_HDF5_QUEUE;
+        } else if (imageQueue_.size() >= MAX_IMAGE_QUEUE) {
+            fullPool = "Image";
+            fullDepth = MAX_IMAGE_QUEUE;
+        } else {
+            hdf5Queue_.push_back(std::move(hdf5Task));
+            imageQueue_.push_back(std::move(imgTask));
         }
-        hdf5Queue_.push_back(task);   // copy (events data)
     }
+
+    if (fullPool) {
+        pairDrops_.fetch_add(1);
+        emitDropWarning(fullPool, fullDepth);
+        return;
+    }
+
     hdf5QueueCv_.notify_one();
-
-    // ── Push to image queue (share the orbbec data, clear events to save memory) ─
-    {
-        WriteTask imgTask;
-        imgTask.idx    = task.idx;
-        imgTask.orbbec = std::move(task.orbbec);
-        imgTask.eventCount = task.eventCount;
-        imgTask.eventStartTs = task.eventStartTs;
-        imgTask.eventEndTs = task.eventEndTs;
-        imgTask.events.startTs = task.events.startTs;
-        imgTask.events.endTs = task.events.endTs;
-        imgTask.events.triggerStartSeq = task.events.triggerStartSeq;
-        imgTask.events.triggerEndSeq = task.events.triggerEndSeq;
-        imgTask.events.sliceSeq = task.events.sliceSeq;
-        imgTask.events.triggerStartHostReceiptUs = task.events.triggerStartHostReceiptUs;
-        imgTask.events.triggerEndHostReceiptUs = task.events.triggerEndHostReceiptUs;
-        imgTask.events.valid = task.events.valid;
-        imgTask.seqNum = task.seqNum;
-        imgTask.clockDiffUs = task.clockDiffUs;
-        imgTask.deltaOrbToEvsUs = task.deltaOrbToEvsUs;
-        imgTask.mappedColorTimestampUs = task.mappedColorTimestampUs;
-        imgTask.mappedDepthTimestampUs = task.mappedDepthTimestampUs;
-        imgTask.appliedRgbFrameOffset = task.appliedRgbFrameOffset;
-        // imgTask.events.events left empty – not needed for images/CSV metadata.
-
-        std::lock_guard<std::mutex> lk(imageQueueMutex_);
-        if (imageQueue_.size() >= MAX_IMAGE_QUEUE) {
-            imageQueue_.pop_front();
-            imagDrops_.fetch_add(1);
-            emitDropWarning("Image", MAX_IMAGE_QUEUE);
-        }
-        imageQueue_.push_back(std::move(imgTask));
-    }
     imageQueueCv_.notify_one();
 }
 

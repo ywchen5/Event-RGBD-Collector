@@ -34,7 +34,7 @@
  *      and one for images (fully parallel, no mutex needed).
  *    - Adaptive compression: gzip-4 for ≤100 K events, gzip-1 for
  *      ≤500 K, uncompressed above that (CPU can't keep up at 30 fps).
- *    - Back-pressure monitoring: periodic stats log, throttled drop
+ *    - Back-pressure monitoring: all-or-nothing paired drops, throttled
  *      warnings (at most 1 per second).
  */
 class DataRecorder {
@@ -112,8 +112,7 @@ private:
     std::atomic<uint64_t> recordIdx_{0};
 
     // ── Back-pressure stats ────────────────────────────────────────────
-    std::atomic<uint64_t> hdf5Drops_{0};
-    std::atomic<uint64_t> imagDrops_{0};
+    std::atomic<uint64_t> pairDrops_{0};
     std::atomic<uint64_t> totalWritten_{0};
     std::chrono::steady_clock::time_point lastDropWarnTime_;
     std::mutex dropWarnMutex_;
