@@ -247,7 +247,7 @@ int main(int argc, char *argv[]) {
     bool displayEnabled = !hasFlag(argc, argv, "--no-display");
     std::string outputRoot = getFlagValue(argc, argv, "--output",
                              getFlagValue(argc, argv, "-o", "./output"));
-    int64_t maxSyncedPairs = getInt64FlagValue(argc, argv, "--max-synced-pairs", 3);
+    int64_t maxSyncedPairs = getInt64FlagValue(argc, argv, "--max-synced-pairs", 0);
     int64_t stopAfterTriggers = getInt64FlagValue(argc, argv, "--stop-after-triggers", 0);
     std::string rawFile = getPositional(argc, argv);
 
