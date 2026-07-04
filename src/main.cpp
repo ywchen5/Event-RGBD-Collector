@@ -17,6 +17,9 @@
 #include <string>
 #include <cstring>
 #include <exception>
+#include <optional>
+#include <algorithm>
+#include <cctype>
 
 // OpenCV for visualisation
 #include <opencv2/core.hpp>
@@ -64,6 +67,74 @@ static int64_t getInt64FlagValue(int argc, char *argv[], const char *flag,
                   + ". Using " + std::to_string(defaultVal) + ".");
         return defaultVal;
     }
+}
+
+static std::optional<int32_t> getOptionalInt32FlagValue(int argc, char *argv[], const char *flag) {
+    if (!hasFlag(argc, argv, flag)) return std::nullopt;
+
+    std::string value = getFlagValue(argc, argv, flag, "");
+    if (value.empty()) {
+        Log::warn("Main", std::string("Missing value for ") + flag + ".");
+        return std::nullopt;
+    }
+
+    try {
+        return static_cast<int32_t>(std::stol(value));
+    }
+    catch (const std::exception &) {
+        Log::warn("Main", std::string("Invalid integer for ") + flag + ": " + value + ".");
+        return std::nullopt;
+    }
+}
+
+static std::optional<bool> getOptionalBoolFlagValue(int argc, char *argv[], const char *flag) {
+    auto value = getOptionalInt32FlagValue(argc, argv, flag);
+    if (!value) return std::nullopt;
+    return *value != 0;
+}
+
+static void applyColorFormatFlag(int argc, char *argv[], OrbbecColorControlConfig &cfg) {
+    if (!hasFlag(argc, argv, "--color-format")) return;
+
+    std::string fmt = getFlagValue(argc, argv, "--color-format", "");
+    std::transform(fmt.begin(), fmt.end(), fmt.begin(), [](unsigned char c) {
+        return static_cast<char>(std::toupper(c));
+    });
+
+    if (fmt == "MJPG") {
+        cfg.colorFormat = OB_FORMAT_MJPG;
+    } else if (fmt == "BGR") {
+        cfg.colorFormat = OB_FORMAT_BGR;
+    } else if (fmt == "RGB") {
+        cfg.colorFormat = OB_FORMAT_RGB;
+    } else if (fmt == "YUYV") {
+        cfg.colorFormat = OB_FORMAT_YUYV;
+    } else if (fmt == "UYVY") {
+        cfg.colorFormat = OB_FORMAT_UYVY;
+    } else if (fmt == "NV12") {
+        cfg.colorFormat = OB_FORMAT_NV12;
+    } else {
+        Log::warn("Main", "Unknown --color-format '" + fmt + "'. Using MJPG.");
+        cfg.colorFormat = OB_FORMAT_MJPG;
+        fmt = "MJPG";
+    }
+
+    cfg.colorFormatName = fmt;
+}
+
+static OrbbecColorControlConfig parseColorControlConfig(int argc, char *argv[]) {
+    OrbbecColorControlConfig cfg;
+    applyColorFormatFlag(argc, argv, cfg);
+
+    cfg.autoExposure = getOptionalBoolFlagValue(argc, argv, "--color-auto-exposure");
+    cfg.exposure = getOptionalInt32FlagValue(argc, argv, "--color-exposure");
+    cfg.gain = getOptionalInt32FlagValue(argc, argv, "--color-gain");
+    cfg.autoWhiteBalance = getOptionalBoolFlagValue(argc, argv, "--color-auto-white-balance");
+    cfg.whiteBalance = getOptionalInt32FlagValue(argc, argv, "--color-white-balance");
+    cfg.autoExposurePriority = getOptionalInt32FlagValue(argc, argv, "--color-auto-exposure-priority");
+    cfg.powerLineFrequency = getOptionalInt32FlagValue(argc, argv, "--color-power-line-frequency");
+
+    return cfg;
 }
 
 // Get first positional argument (non-flag, non-flag-value)
@@ -271,7 +342,8 @@ int main(int argc, char *argv[]) {
     // ════════════════════════════════════════════════════════════════════
     std::unique_ptr<OrbbecProcessor> orbbec;
     try {
-        orbbec = std::make_unique<OrbbecProcessor>();
+        OrbbecColorControlConfig colorControl = parseColorControlConfig(argc, argv);
+        orbbec = std::make_unique<OrbbecProcessor>(colorControl);
         orbbec->start();  // launches the processing thread
     }
     catch (const std::exception &e) {
